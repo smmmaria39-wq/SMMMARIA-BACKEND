@@ -3,7 +3,8 @@
 // ===============================================
 
 import express from 'express';
-import { protect, admin } from '../middleware/auth.js';
+import { protect } from '../middleware/auth.js';
+import { admin } from '../middleware/admin.js';
 import { getDashboardStats } from '../controllers/admin.controller.js';
 
 const router = express.Router();
@@ -12,8 +13,5 @@ const router = express.Router();
 router.use(protect, admin);
 
 router.get('/dashboard', getDashboardStats);
-
-// Future admin routes can go here:
-// router.get('/users', getAllUsers); // (Already in user.routes.js but could be moved here)
 
 export default router;
