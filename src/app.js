@@ -22,7 +22,7 @@ app.use(helmet()); // Sets HTTP headers for security
 
 // 2. CORS Configuration (Crucial for GitHub Pages frontend)
 const corsOptions = {
- origin: '*', // Change to your GitHub Pages URL in production (e.g., 'https://yourname.github.io')
+ origin: 'https://smmaria.netlify.app', // Change to your GitHub Pages URL in production (e.g., 'https://yourname.github.io')
  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
  allowedHeaders: ['Content-Type', 'Authorization'],
  credentials: true
