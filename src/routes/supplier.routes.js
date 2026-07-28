@@ -5,7 +5,8 @@
 import express from 'express';
 import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
-import { protect, admin } from '../middleware/auth.js';
+import { protect } from '../middleware/auth.js';
+import { admin } from '../middleware/admin.js';
 import { addSupplier, checkSupplierBalance, syncSupplierServices } from '../controllers/supplier.controller.js';
 
 const router = express.Router();
