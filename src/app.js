@@ -14,6 +14,9 @@ import router from './routes/index.js';
 // Initialize Express App
 const app = express();
 
+// 0. Trust Proxy (Required for Railway to prevent rate-limiter crashes)
+app.set('trust proxy', 1);
+
 // 1. Security Middleware
 app.use(helmet()); // Sets HTTP headers for security
 
