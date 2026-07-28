@@ -3,7 +3,8 @@
 // ===============================================
 
 import express from 'express';
-import { protect, admin } from '../middleware/auth.js';
+import { protect } from '../middleware/auth.js';
+import { admin } from '../middleware/admin.js';
 import { getServices, getCategories, updateService } from '../controllers/service.controller.js';
 
 const router = express.Router();
