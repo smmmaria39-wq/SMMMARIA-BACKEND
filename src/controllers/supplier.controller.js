@@ -8,6 +8,31 @@ import { successResponse, errorResponse } from '../utils/response.js';
 import { fetchSupplierBalance, fetchSupplierServices } from '../services/supplier.service.js';
 
 /**
+ * @desc    Get all suppliers (Admin)
+ * @route   GET /api/v1/suppliers
+ */
+export const getSuppliers = async (req, res, next) => {
+    try {
+        const snapshot = await getRef('suppliers').get();
+        const suppliers = [];
+        
+        if (snapshot.exists()) {
+            const suppliersData = snapshot.val();
+            for (const key in suppliersData) {
+                if (Object.hasOwnProperty.call(suppliersData, key)) {
+                    // Attach the Firebase key as 'id'
+                    suppliers.push({ id: key, ...suppliersData[key] });
+                }
+            }
+        }
+        
+        return successResponse(res, 'Suppliers fetched successfully', suppliers);
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * @desc    Add a new supplier (Admin)
  * @route   POST /api/v1/suppliers
  */
