@@ -4,6 +4,7 @@
 
 import { getRef } from '../database/firebase.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import crypto from 'crypto'; // Import Node.js built-in crypto module
 
 /**
  * @desc    Update user profile
@@ -36,15 +37,20 @@ export const updateProfile = async (req, res, next) => {
 export const getAllUsers = async (req, res, next) => {
  try {
   const snapshot = await getRef('users').get();
-  const users = snapshot.exists() ? Object.values(snapshot.val()) : [];
+  const users = [];
   
-  // Remove passwords from array
-  const sanitizedUsers = users.map(user => {
-   const { password, ...userWithoutPassword } = user;
-   return userWithoutPassword;
-  });
+  if (snapshot.exists()) {
+   const usersData = snapshot.val();
+   // Loop through Firebase data and attach the key as 'id'
+   for (const key in usersData) {
+    if (Object.hasOwnProperty.call(usersData, key)) {
+     const { password, ...userWithoutPassword } = usersData[key]; // Remove password
+     users.push({ id: key, ...userWithoutPassword }); // Add 'id' to the object
+    }
+   }
+  }
   
-  return successResponse(res, 'Users fetched successfully', sanitizedUsers);
+  return successResponse(res, 'Users fetched successfully', users);
  } catch (error) {
   next(error);
  }
@@ -70,6 +76,27 @@ export const updateUserStatus = async (req, res, next) => {
   await userRef.update({ status });
   
   return successResponse(res, `User status updated to ${status}`);
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Generate or Reset User API Key
+ * @route   POST /api/v1/users/apikey
+ * @access  Private
+ */
+export const generateApiKey = async (req, res, next) => {
+ try {
+  const userId = req.user.id;
+  
+  // Generate a secure random 32-character API key
+  const newApiKey = crypto.randomBytes(16).toString('hex');
+  
+  // Save it to the user's profile in Firebase
+  await getRef(`users/${userId}/apiKey`).set(newApiKey);
+  
+  return successResponse(res, 'API Key generated successfully', { apiKey: newApiKey });
  } catch (error) {
   next(error);
  }
