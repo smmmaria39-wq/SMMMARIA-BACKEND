@@ -13,15 +13,30 @@ import { fetchSupplierBalance, fetchSupplierServices } from '../services/supplie
  */
 export const getSuppliers = async (req, res, next) => {
     try {
-        const snapshot = await getRef('suppliers').get();
+        // Fetch suppliers AND services at the same time for speed
+        const [suppliersSnap, servicesSnap] = await Promise.all([
+            getRef('suppliers').get(),
+            getRef('services').get()
+        ]);
+        
+        const servicesData = servicesSnap.exists() ? servicesSnap.val() : {};
+        const servicesArray = Object.values(servicesData);
+        
         const suppliers = [];
         
-        if (snapshot.exists()) {
-            const suppliersData = snapshot.val();
+        if (suppliersSnap.exists()) {
+            const suppliersData = suppliersSnap.val();
             for (const key in suppliersData) {
                 if (Object.hasOwnProperty.call(suppliersData, key)) {
-                    // Attach the Firebase key as 'id'
-                    suppliers.push({ id: key, ...suppliersData[key] });
+                    const supplier = suppliersData[key];
+                    // Count how many services belong to this supplier
+                    const serviceCount = servicesArray.filter(s => s.supplierId === key).length;
+                    
+                    suppliers.push({ 
+                        id: key, 
+                        ...supplier, 
+                        serviceCount: serviceCount // Add the count here
+                    });
                 }
             }
         }
