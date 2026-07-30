@@ -14,13 +14,22 @@ export const getWallet = async (req, res, next) => {
   try {
     const userId = req.user.id;
     
-    // Fetch user balance
+    // 1. Fetch user balance
     const userRef = await getRef(`users/${userId}`).get();
     const balance = userRef.exists() ? userRef.val().balance || 0 : 0;
     
-    // Fetch user transactions
-    const txSnapshot = await getRef('transactions').orderByChild('userId').equalTo(userId).get();
-    const transactions = txSnapshot.exists() ? Object.values(txSnapshot.val()).reverse() : [];
+    // 2. Fetch ALL transactions and filter in JS (Bypasses Firebase Index requirement)
+    const txSnapshot = await getRef('transactions').get();
+    let transactions = [];
+    
+    if (txSnapshot.exists()) {
+      const allTx = txSnapshot.val();
+      // Filter for this specific user, add the ID, and reverse (newest first)
+      transactions = Object.keys(allTx)
+        .filter(key => allTx[key].userId === userId)
+        .map(key => ({ id: key, ...allTx[key] }))
+        .reverse();
+    }
     
     return successResponse(res, 'Wallet data fetched successfully', {
       balance,
@@ -40,7 +49,6 @@ export const adjustWallet = async (req, res, next) => {
   try {
     const { userId, amount, action, note } = req.body;
 
-    // 1. Validate inputs
     if (!userId || !amount || !action) {
       return errorResponse(res, 'User ID, amount, and action are required.', 400);
     }
@@ -50,7 +58,6 @@ export const adjustWallet = async (req, res, next) => {
       return errorResponse(res, 'Amount must be a positive number.', 400);
     }
 
-    // 2. Fetch the user from Firebase
     const userRef = getRef(`users/${userId}`);
     const userSnapshot = await userRef.get();
     
@@ -61,7 +68,6 @@ export const adjustWallet = async (req, res, next) => {
     const userData = userSnapshot.val();
     const currentBalance = parseFloat(userData.balance) || 0;
 
-    // 3. Calculate new balance
     let newBalance;
     if (action === 'add') {
       newBalance = currentBalance + numericAmount;
@@ -71,10 +77,8 @@ export const adjustWallet = async (req, res, next) => {
       return errorResponse(res, 'Invalid action. Must be "add" or "subtract".', 400);
     }
 
-    // 4. Update Firebase with the new balance
     await userRef.update({ balance: newBalance });
 
-    // 5. Log this transaction in the transactions node
     const txRef = getRef('transactions').push();
     await txRef.set({
       userId: userId,
