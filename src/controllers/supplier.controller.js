@@ -13,6 +13,7 @@ import { fetchSupplierBalance, fetchSupplierServices } from '../services/supplie
  */
 export const getSuppliers = async (req, res, next) => {
     try {
+        // Fetch suppliers AND services at the same time for speed
         const [suppliersSnap, servicesSnap] = await Promise.all([
             getRef('suppliers').get(),
             getRef('services').get()
@@ -28,12 +29,13 @@ export const getSuppliers = async (req, res, next) => {
             for (const key in suppliersData) {
                 if (Object.hasOwnProperty.call(suppliersData, key)) {
                     const supplier = suppliersData[key];
+                    // Count how many services belong to this supplier
                     const serviceCount = servicesArray.filter(s => s.supplierId === key).length;
                     
                     suppliers.push({ 
                         id: key, 
                         ...supplier, 
-                        serviceCount: serviceCount
+                        serviceCount: serviceCount // Add the count here
                     });
                 }
             }
@@ -57,7 +59,7 @@ export const addSupplier = async (req, res, next) => {
         const supplierData = {
             id, name, apiUrl, apiKey,
             priority: priority || 1,
-            markup: markup || 0,
+            markup: markup || 0, // Percentage markup on cost price
             status: 'active',
             balance: 0,
             lastSync: null,
@@ -85,6 +87,7 @@ export const checkSupplierBalance = async (req, res, next) => {
         const supplier = snapshot.val();
         const balance = await fetchSupplierBalance(supplier.apiUrl, supplier.apiKey);
         
+        // Update Firebase with new balance
         await getRef(`suppliers/${id}/balance`).set(balance);
         
         return successResponse(res, 'Supplier balance fetched', { balance });
@@ -111,6 +114,7 @@ export const syncSupplierServices = async (req, res, next) => {
         const markupMultiplier = 1 + (supplier.markup / 100);
 
         for (const extService of externalServices) {
+            // Use supplier ID + external service ID as our internal ID to prevent duplicates
             const internalId = `${id}_${extService.service}`;
             
             const serviceData = {
