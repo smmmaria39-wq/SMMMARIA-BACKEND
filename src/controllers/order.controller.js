@@ -118,12 +118,24 @@ export const createOrder = async (req, res, next) => {
 export const getOrders = async (req, res, next) => {
     try {
         const snapshot = await getRef('orders').get();
-        let orders = snapshot.exists() ? Object.values(snapshot.val()).reverse() : [];
-
+        let orders = [];
+        
+        if (snapshot.exists()) {
+            const ordersData = snapshot.val();
+            for (const key in ordersData) {
+                if (Object.hasOwnProperty.call(ordersData, key)) {
+                    // Attach the Firebase key as 'id'
+                    orders.push({ id: key, ...ordersData[key] });
+                }
+            }
+            orders.reverse(); // Newest first
+        }
+        
+        // If it's a standard user, only return their orders
         if (req.user.role === 'user') {
             orders = orders.filter(o => o.userId === req.user.id);
         }
-
+        
         return successResponse(res, 'Orders fetched successfully', orders);
     } catch (error) {
         next(error);
