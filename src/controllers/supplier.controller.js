@@ -1,146 +1,112 @@
 // ===============================================
-// Supplier Controller
+// Service Controller
 // ===============================================
 
 import { getRef } from '../database/firebase.js';
-import { generateUUID } from '../utils/helpers.js';
-import { successResponse, errorResponse } from '../utils/response.js';
-import { fetchSupplierBalance, fetchSupplierServices } from '../services/supplier.service.js';
+import { successResponse } from '../utils/response.js';
 
 /**
- * @desc    Get all suppliers (Admin)
- * @route   GET /api/v1/suppliers
+ * @desc    Get all active services (Public/User)
+ * @route   GET /api/v1/services
  */
-export const getSuppliers = async (req, res, next) => {
-    try {
-        // Fetch suppliers AND services at the same time for speed
-        const [suppliersSnap, servicesSnap] = await Promise.all([
-            getRef('suppliers').get(),
-            getRef('services').get()
-        ]);
-        
-        const servicesData = servicesSnap.exists() ? servicesSnap.val() : {};
-        const servicesArray = Object.values(servicesData);
-        
-        const suppliers = [];
-        
-        if (suppliersSnap.exists()) {
-            const suppliersData = suppliersSnap.val();
-            for (const key in suppliersData) {
-                if (Object.hasOwnProperty.call(suppliersData, key)) {
-                    const supplier = suppliersData[key];
-                    // Count how many services belong to this supplier
-                    const serviceCount = servicesArray.filter(s => s.supplierId === key).length;
-                    
-                    suppliers.push({ 
-                        id: key, 
-                        ...supplier, 
-                        serviceCount: serviceCount // Add the count here
-                    });
-                }
-            }
-        }
-        
-        return successResponse(res, 'Suppliers fetched successfully', suppliers);
-    } catch (error) {
-        next(error);
+export const getServices = async (req, res, next) => {
+ try {
+  const { category, search } = req.query;
+  const snapshot = await getRef('services').get();
+  
+  let services = [];
+  if (snapshot.exists()) {
+   const servicesData = snapshot.val();
+   for (const key in servicesData) {
+    if (Object.hasOwnProperty.call(servicesData, key)) {
+     services.push({ id: key, ...servicesData[key] }); // Attach ID
     }
+   }
+  }
+  
+  // If the user is NOT an admin, filter out inactive services
+  const isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'super_admin');
+  if (!isAdmin) {
+   services = services.filter(s => s.status === 'active');
+  }
+  
+  // Filter by category if provided
+  if (category) {
+   services = services.filter(s => s.category?.toLowerCase() === category.toLowerCase());
+  }
+  
+  // Filter by search term if provided
+  if (search) {
+   services = services.filter(s => s.name?.toLowerCase().includes(search.toLowerCase()));
+  }
+  
+  return successResponse(res, 'Services fetched successfully', services);
+ } catch (error) {
+  next(error);
+ }
 };
 
 /**
- * @desc    Add a new supplier (Admin)
- * @route   POST /api/v1/suppliers
+ * @desc    Get all categories with service counts (Public/User)
+ * @route   GET /api/v1/services/categories
  */
-export const addSupplier = async (req, res, next) => {
-    try {
-        const { name, apiUrl, apiKey, priority, markup } = req.body;
-        const id = generateUUID();
-
-        const supplierData = {
-            id, name, apiUrl, apiKey,
-            priority: priority || 1,
-            markup: markup || 0, // Percentage markup on cost price
-            status: 'active',
-            balance: 0,
-            lastSync: null,
-            createdAt: new Date().toISOString()
-        };
-
-        await getRef(`suppliers/${id}`).set(supplierData);
-        return successResponse(res, 'Supplier added successfully', supplierData, 201);
-    } catch (error) {
-        next(error);
+export const getCategories = async (req, res, next) => {
+ try {
+  const { withCounts } = req.query; // Check if admin is requesting counts
+  const snapshot = await getRef('services').get();
+  let services = [];
+  
+  if (snapshot.exists()) {
+   const servicesData = snapshot.val();
+   for (const key in servicesData) {
+    if (Object.hasOwnProperty.call(servicesData, key)) {
+     services.push({ id: key, ...servicesData[key] });
     }
+   }
+  }
+  
+  // Group by category and count the services
+  const categoriesMap = {};
+  services.forEach(s => {
+   const catName = s.category || 'Uncategorized';
+   if (!categoriesMap[catName]) categoriesMap[catName] = 0;
+   categoriesMap[catName]++;
+  });
+  
+  if (withCounts === 'true') {
+   // ADMIN FORMAT: Array of objects with counts
+   const categories = Object.keys(categoriesMap).map((name, index) => ({
+    id: index + 1,
+    name: name,
+    serviceCount: categoriesMap[name]
+   }));
+   return successResponse(res, 'Categories fetched successfully', categories);
+  } else {
+   // USER FORMAT: Simple array of strings (WON'T BREAK USER FRONTEND)
+   const categories = Object.keys(categoriesMap);
+   return successResponse(res, 'Categories fetched successfully', categories);
+  }
+ } catch (error) {
+  next(error);
+ }
 };
 
 /**
- * @desc    Check supplier live balance (Admin)
- * @route   GET /api/v1/suppliers/:id/balance
+ * @desc    Admin: Update service status or price
+ * @route   PUT /api/v1/services/:id
  */
-export const checkSupplierBalance = async (req, res, next) => {
-    try {
-        const { id } = req.params;
-        const snapshot = await getRef(`suppliers/${id}`).get();
-        
-        if (!snapshot.exists()) return errorResponse(res, 'Supplier not found', 404);
-        
-        const supplier = snapshot.val();
-        const balance = await fetchSupplierBalance(supplier.apiUrl, supplier.apiKey);
-        
-        // Update Firebase with new balance
-        await getRef(`suppliers/${id}/balance`).set(balance);
-        
-        return successResponse(res, 'Supplier balance fetched', { balance });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * @desc    Sync services from supplier into our DB (Admin)
- * @route   POST /api/v1/suppliers/:id/sync
- */
-export const syncSupplierServices = async (req, res, next) => {
-    try {
-        const { id } = req.params;
-        const snapshot = await getRef(`suppliers/${id}`).get();
-        
-        if (!snapshot.exists()) return errorResponse(res, 'Supplier not found', 404);
-        
-        const supplier = snapshot.val();
-        const externalServices = await fetchSupplierServices(supplier.apiUrl, supplier.apiKey);
-        
-        let importedCount = 0;
-        const markupMultiplier = 1 + (supplier.markup / 100);
-
-        for (const extService of externalServices) {
-            // Use supplier ID + external service ID as our internal ID to prevent duplicates
-            const internalId = `${id}_${extService.service}`;
-            
-            const serviceData = {
-                id: internalId,
-                supplierId: id,
-                supplierServiceId: extService.service,
-                name: extService.name,
-                category: extService.category || 'Uncategorized',
-                costPrice: parseFloat(extService.rate),
-                sellingPrice: parseFloat((extService.rate * markupMultiplier).toFixed(2)),
-                min: parseInt(extService.min),
-                max: parseInt(extService.max),
-                averageTime: extService.average_time || 'Unknown',
-                refill: extService.refill === '1' || false,
-                cancel: extService.cancel === '1' || false,
-                status: 'active',
-                type: extService.type || 'default'
-            };
-
-            await getRef(`services/${internalId}`).set(serviceData);
-            importedCount++;
-        }
-
-        await getRef(`suppliers/${id}/lastSync`).set(new Date().toISOString());
-        return successResponse(res, `Synced ${importedCount} services successfully`);
-    } catch (error) {
-        next(error);
-    }
+export const updateService = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  const { sellingPrice, status } = req.body;
+  
+  const updates = {};
+  if (sellingPrice !== undefined) updates.sellingPrice = parseFloat(sellingPrice);
+  if (status) updates.status = status;
+  
+  await getRef(`services/${id}`).update(updates);
+  return successResponse(res, 'Service updated successfully');
+ } catch (error) {
+  next(error);
+ }
 };
