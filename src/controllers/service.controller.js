@@ -14,19 +14,30 @@ export const getServices = async (req, res, next) => {
   const { category, search } = req.query;
   const snapshot = await getRef('services').get();
   
-  let services = snapshot.exists() ? Object.values(snapshot.val()) : [];
+  let services = [];
+  if (snapshot.exists()) {
+   const servicesData = snapshot.val();
+   for (const key in servicesData) {
+    if (Object.hasOwnProperty.call(servicesData, key)) {
+     services.push({ id: key, ...servicesData[key] }); // Attach ID
+    }
+   }
+  }
   
-  // Filter out inactive services for users
-  services = services.filter(s => s.status === 'active');
+  // If the user is NOT an admin, filter out inactive services
+  const isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'super_admin');
+  if (!isAdmin) {
+   services = services.filter(s => s.status === 'active');
+  }
   
   // Filter by category if provided
   if (category) {
-   services = services.filter(s => s.category.toLowerCase() === category.toLowerCase());
+   services = services.filter(s => s.category?.toLowerCase() === category.toLowerCase());
   }
   
   // Filter by search term if provided
   if (search) {
-   services = services.filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
+   services = services.filter(s => s.name?.toLowerCase().includes(search.toLowerCase()));
   }
   
   return successResponse(res, 'Services fetched successfully', services);
@@ -36,16 +47,37 @@ export const getServices = async (req, res, next) => {
 };
 
 /**
- * @desc    Get all categories (Public/User)
+ * @desc    Get all categories with service counts (Public/User)
  * @route   GET /api/v1/services/categories
  */
 export const getCategories = async (req, res, next) => {
  try {
   const snapshot = await getRef('services').get();
-  const services = snapshot.exists() ? Object.values(snapshot.val()) : [];
+  let services = [];
   
-  // Extract unique categories
-  const categories = [...new Set(services.map(s => s.category))];
+  if (snapshot.exists()) {
+   const servicesData = snapshot.val();
+   for (const key in servicesData) {
+    if (Object.hasOwnProperty.call(servicesData, key)) {
+     services.push({ id: key, ...servicesData[key] });
+    }
+   }
+  }
+  
+  // Group by category and count the services
+  const categoriesMap = {};
+  services.forEach(s => {
+   const catName = s.category || 'Uncategorized';
+   if (!categoriesMap[catName]) categoriesMap[catName] = 0;
+   categoriesMap[catName]++;
+  });
+  
+  // Convert to array of objects for the frontend table
+  const categories = Object.keys(categoriesMap).map((name, index) => ({
+   id: index + 1,
+   name: name,
+   serviceCount: categoriesMap[name]
+  }));
   
   return successResponse(res, 'Categories fetched successfully', categories);
  } catch (error) {
@@ -63,7 +95,7 @@ export const updateService = async (req, res, next) => {
   const { sellingPrice, status } = req.body;
   
   const updates = {};
-  if (sellingPrice) updates.sellingPrice = parseFloat(sellingPrice);
+  if (sellingPrice !== undefined) updates.sellingPrice = parseFloat(sellingPrice);
   if (status) updates.status = status;
   
   await getRef(`services/${id}`).update(updates);
