@@ -21,8 +21,12 @@ app.set('trust proxy', 1);
 app.use(helmet()); // Sets HTTP headers for security
 
 // 2. CORS Configuration (Crucial for GitHub Pages frontend)
+// 2. CORS Configuration
 const corsOptions = {
- origin: 'https://smmaria.netlify.app', // Change to your GitHub Pages URL in production (e.g., 'https://yourname.github.io')
+ origin: [
+  'https://smmaria.netlify.app', // Your main user frontend
+  'https://adminsmmq.netlify.app' // Your admin frontend
+ ],
  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
  allowedHeaders: ['Content-Type', 'Authorization'],
  credentials: true
