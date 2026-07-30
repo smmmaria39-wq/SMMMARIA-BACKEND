@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-import { addSupplier, checkSupplierBalance, syncSupplierServices } from '../controllers/supplier.controller.js';
+// Added getSuppliers to the imports below:
+import { getSuppliers, addSupplier, checkSupplierBalance, syncSupplierServices } from '../controllers/supplier.controller.js';
 
 const router = express.Router();
 
@@ -21,6 +22,8 @@ const addSupplierSchema = {
  })
 };
 
+// Added the GET route below:
+router.get('/', protect, admin, getSuppliers);
 router.post('/', protect, admin, validate(addSupplierSchema), addSupplier);
 router.get('/:id/balance', protect, admin, checkSupplierBalance);
 router.post('/:id/sync', protect, admin, syncSupplierServices);
