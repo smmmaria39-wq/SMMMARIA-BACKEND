@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-import { updateProfile, getAllUsers, updateUserStatus } from '../controllers/user.controller.js';
+// Added generateApiKey to the imports below:
+import { updateProfile, getAllUsers, updateUserStatus, generateApiKey } from '../controllers/user.controller.js';
 
 const router = express.Router();
 
@@ -28,6 +29,7 @@ const statusSchema = {
 
 // Routes
 router.put('/profile', protect, validate(updateProfileSchema), updateProfile);
+router.post('/apikey', protect, generateApiKey); // <-- Added the API Key route
 
 // Admin Routes
 router.get('/', protect, admin, getAllUsers);
