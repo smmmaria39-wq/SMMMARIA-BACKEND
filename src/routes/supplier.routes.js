@@ -7,8 +7,8 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-// Added getSuppliers to the imports below:
-import { getSuppliers, addSupplier, checkSupplierBalance, syncSupplierServices } from '../controllers/supplier.controller.js';
+// Added deleteSupplier to the imports below:
+import { getSuppliers, addSupplier, checkSupplierBalance, syncSupplierServices, deleteSupplier } from '../controllers/supplier.controller.js';
 
 const router = express.Router();
 
@@ -22,10 +22,11 @@ const addSupplierSchema = {
  })
 };
 
-// Added the GET route below:
+// Routes
 router.get('/', protect, admin, getSuppliers);
 router.post('/', protect, admin, validate(addSupplierSchema), addSupplier);
 router.get('/:id/balance', protect, admin, checkSupplierBalance);
 router.post('/:id/sync', protect, admin, syncSupplierServices);
+router.delete('/:id', protect, admin, deleteSupplier); // <-- Added the DELETE route
 
 export default router;
