@@ -144,3 +144,38 @@ export const syncSupplierServices = async (req, res, next) => {
         next(error);
     }
 };
+
+/**
+ * @desc    Delete a supplier and all its services (Admin)
+ * @route   DELETE /api/v1/suppliers/:id
+ */
+export const deleteSupplier = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        
+        // 1. Delete the supplier
+        await getRef(`suppliers/${id}`).remove();
+        
+        // 2. Find and delete all associated services
+        const servicesSnap = await getRef('services').get();
+        if (servicesSnap.exists()) {
+            const updates = {};
+            servicesSnap.forEach(childSnap => {
+                const service = childSnap.val();
+                if (service.supplierId === id) {
+                    // Setting a path to null in Firebase deletes the data
+                    updates[`services/${childSnap.key}`] = null; 
+                }
+            });
+            
+            // Execute the batch delete if there are services to remove
+            if (Object.keys(updates).length > 0) {
+                await getRef().update(updates);
+            }
+        }
+        
+        return successResponse(res, 'Supplier and associated services deleted successfully');
+    } catch (error) {
+        next(error);
+    }
+};
