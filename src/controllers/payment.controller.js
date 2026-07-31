@@ -10,7 +10,7 @@ import { logger } from '../utils/logger.js';
 // Exchange Rate: 1 USD = 3730 UGX (You can adjust this rate in the future)
 const USD_TO_UGX_RATE = 3730;
 
-// Helper function to call WearAmaze API using Form Data
+// Helper function to call WearAmaze API using URLSearchParams
 const processWearAmazePayment = async (payload) => {
   const WEARAMAZE_AUTH = process.env.WEARAMAZE_BASE64_AUTH;
   const WEARAMAZE_API_URL = process.env.WEARAMAZE_API_URL || 'https://wallet.wearemarz.com/api/v1/collect-money'; 
@@ -19,19 +19,22 @@ const processWearAmazePayment = async (payload) => {
     throw new Error('WearAmaze API credentials are not configured in Railway.');
   }
 
-  // Convert payload to FormData because the API expects multipart/form-data
-  const formData = new FormData();
+  // Use URLSearchParams for reliable application/x-www-form-urlencoded formatting
+  const params = new URLSearchParams();
   for (const key in payload) {
-    formData.append(key, payload[key]);
+    params.append(key, payload[key]);
   }
+
+  // Log the exact payload being sent so we can see it in Railway logs
+  console.log("Sending to WearAmaze:", params.toString());
 
   const response = await fetch(WEARAMAZE_API_URL, {
     method: 'POST',
     headers: {
-      // Do not set Content-Type, fetch automatically sets it for FormData
+      'Content-Type': 'application/x-www-form-urlencoded',
       'Authorization': `Basic ${WEARAMAZE_AUTH}`
     },
-    body: formData
+    body: params
   });
 
   const result = await response.json();
@@ -126,7 +129,7 @@ export const createDeposit = async (req, res, next) => {
         gatewayPayload.card_cvv = cardCvv;
       }
 
-      // Call WearAmaze API with FormData
+      // Call WearAmaze API
       const gatewayResponse = await processWearAmazePayment(gatewayPayload);
 
       // If API succeeds, update payment data to approved
