@@ -10,24 +10,28 @@ import { logger } from '../utils/logger.js';
 // Exchange Rate: 1 USD = 3730 UGX (You can adjust this rate in the future)
 const USD_TO_UGX_RATE = 3730;
 
-// Helper function to call WearAmaze API
+// Helper function to call WearAmaze API using Form Data
 const processWearAmazePayment = async (payload) => {
-  // We will use the Base64 Authorization Header from your Railway variables
   const WEARAMAZE_AUTH = process.env.WEARAMAZE_BASE64_AUTH;
-  // Updated to the correct collect-money endpoint
   const WEARAMAZE_API_URL = process.env.WEARAMAZE_API_URL || 'https://wallet.wearemarz.com/api/v1/collect-money'; 
 
   if (!WEARAMAZE_AUTH) {
     throw new Error('WearAmaze API credentials are not configured in Railway.');
   }
 
+  // Convert payload to FormData because the API expects multipart/form-data
+  const formData = new FormData();
+  for (const key in payload) {
+    formData.append(key, payload[key]);
+  }
+
   const response = await fetch(WEARAMAZE_API_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
+      // Do not set Content-Type, fetch automatically sets it for FormData
       'Authorization': `Basic ${WEARAMAZE_AUTH}`
     },
-    body: JSON.stringify(payload)
+    body: formData
   });
 
   const result = await response.json();
@@ -94,15 +98,9 @@ export const createDeposit = async (req, res, next) => {
       // Convert USD amount to UGX for the WearAmaze API
       const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
 
-      // Generate a unique reference for the gateway
-      const gatewayReference = `SMMMARIA-${paymentId.substring(0, 8)}`;
-
-      // Construct payload for WearAmaze based on method
+      // Construct payload for WearAmaze based on documentation
       let gatewayPayload = { 
-        amount: amountInUGX, 
-        currency: "UGX",
-        reference: gatewayReference,
-        description: "Wallet Deposit"
+        amount: amountInUGX.toString() // The API example shows amount as a string
       };
       
       if (method === 'mtn' || method === 'airtel') {
@@ -116,21 +114,24 @@ export const createDeposit = async (req, res, next) => {
           formattedPhone = '256' + formattedPhone;
         }
         
-        gatewayPayload.phoneNumber = formattedPhone;
-        gatewayPayload.network = method; // Some APIs prefer "network" over "method"
+        // The API documentation asks for "phone_number"
+        gatewayPayload.phone_number = formattedPhone;
+        
       } else if (method === 'card') {
+        // Note: The documentation screenshot didn't show card details, 
+        // but we map them here in case they use the same pattern.
         if (!cardNumber || !cardExpiry || !cardCvv) return errorResponse(res, 'Card details are required', 400);
-        gatewayPayload.cardNumber = cardNumber;
-        gatewayPayload.cardExpiry = cardExpiry;
-        gatewayPayload.cardCvv = cardCvv;
+        gatewayPayload.card_number = cardNumber;
+        gatewayPayload.card_expiry = cardExpiry;
+        gatewayPayload.card_cvv = cardCvv;
       }
 
-      // Call WearAmaze API with UGX amount
+      // Call WearAmaze API with FormData
       const gatewayResponse = await processWearAmazePayment(gatewayPayload);
 
       // If API succeeds, update payment data to approved
       paymentData.status = 'approved';
-      paymentData.gatewayReference = gatewayResponse.transactionId || gatewayReference;
+      paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.reference || 'N/A';
 
       // Save to Firebase (Internal records stay in USD)
       await getRef(`payments/${paymentId}`).set(paymentData);
