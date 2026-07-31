@@ -7,12 +7,15 @@ import { generateUUID } from '../utils/helpers.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 
+// Exchange Rate: 1 USD = 3730 UGX (You can adjust this rate in the future)
+const USD_TO_UGX_RATE = 3730;
+
 // Helper function to call WearAmaze API
 const processWearAmazePayment = async (payload) => {
   // We will use the Base64 Authorization Header from your Railway variables
   const WEARAMAZE_AUTH = process.env.WEARAMAZE_BASE64_AUTH;
-  // Replace with the actual endpoint URL provided by WearAmaze
-  const WEARAMAZE_API_URL = process.env.WEARAMAZE_API_URL || 'https://api.wearamaze.com/v1/charge'; 
+  // Updated to the correct collect-money endpoint
+  const WEARAMAZE_API_URL = process.env.WEARAMAZE_API_URL || 'https://wallet.wearemarz.com/api/v1/collect-money'; 
 
   if (!WEARAMAZE_AUTH) {
     throw new Error('WearAmaze API credentials are not configured in Railway.');
@@ -58,7 +61,7 @@ export const createDeposit = async (req, res, next) => {
     const paymentData = {
       id: paymentId,
       userId,
-      amount: parseFloat(amount),
+      amount: parseFloat(amount), // Keep in USD for your internal records
       bonus: bonus,
       totalCredit: totalCredit,
       method,
@@ -88,11 +91,19 @@ export const createDeposit = async (req, res, next) => {
     // PATH 2: AUTOMATED API (MTN, Airtel, Card)
     // ==========================================
     try {
+      // Convert USD amount to UGX for the WearAmaze API
+      const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
+
       // Construct payload for WearAmaze based on method
-      let gatewayPayload = { amount: parseFloat(amount), method };
+      let gatewayPayload = { 
+        amount: amountInUGX, 
+        currency: "UGX",
+        method 
+      };
       
       if (method === 'mtn' || method === 'airtel') {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
+        // Ensure phone number is in the correct format (e.g., starts with 256)
         gatewayPayload.phoneNumber = phoneNumber;
       } else if (method === 'card') {
         if (!cardNumber || !cardExpiry || !cardCvv) return errorResponse(res, 'Card details are required', 400);
@@ -101,14 +112,14 @@ export const createDeposit = async (req, res, next) => {
         gatewayPayload.cardCvv = cardCvv;
       }
 
-      // Call WearAmaze API
+      // Call WearAmaze API with UGX amount
       const gatewayResponse = await processWearAmazePayment(gatewayPayload);
 
       // If API succeeds, update payment data to approved
       paymentData.status = 'approved';
       paymentData.gatewayReference = gatewayResponse.transactionId || 'N/A';
 
-      // Save to Firebase
+      // Save to Firebase (Internal records stay in USD)
       await getRef(`payments/${paymentId}`).set(paymentData);
       await getRef(`transactions/${paymentId}`).set({
         id: paymentId,
