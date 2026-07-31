@@ -94,17 +94,30 @@ export const createDeposit = async (req, res, next) => {
       // Convert USD amount to UGX for the WearAmaze API
       const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
 
+      // Generate a unique reference for the gateway
+      const gatewayReference = `SMMMARIA-${paymentId.substring(0, 8)}`;
+
       // Construct payload for WearAmaze based on method
       let gatewayPayload = { 
         amount: amountInUGX, 
         currency: "UGX",
-        method 
+        reference: gatewayReference,
+        description: "Wallet Deposit"
       };
       
       if (method === 'mtn' || method === 'airtel') {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
-        // Ensure phone number is in the correct format (e.g., starts with 256)
-        gatewayPayload.phoneNumber = phoneNumber;
+        
+        // Format phone number to 256XXXXXXXXX
+        let formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
+        if (formattedPhone.startsWith('0')) {
+          formattedPhone = '256' + formattedPhone.substring(1);
+        } else if (!formattedPhone.startsWith('256')) {
+          formattedPhone = '256' + formattedPhone;
+        }
+        
+        gatewayPayload.phoneNumber = formattedPhone;
+        gatewayPayload.network = method; // Some APIs prefer "network" over "method"
       } else if (method === 'card') {
         if (!cardNumber || !cardExpiry || !cardCvv) return errorResponse(res, 'Card details are required', 400);
         gatewayPayload.cardNumber = cardNumber;
@@ -117,7 +130,7 @@ export const createDeposit = async (req, res, next) => {
 
       // If API succeeds, update payment data to approved
       paymentData.status = 'approved';
-      paymentData.gatewayReference = gatewayResponse.transactionId || 'N/A';
+      paymentData.gatewayReference = gatewayResponse.transactionId || gatewayReference;
 
       // Save to Firebase (Internal records stay in USD)
       await getRef(`payments/${paymentId}`).set(paymentData);
