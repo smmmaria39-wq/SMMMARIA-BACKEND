@@ -7,18 +7,32 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-import { createDeposit, approvePayment, rejectPayment, getPayments } from '../controllers/payment.controller.js';
+import { createDeposit, approvePayment, rejectPayment, getPayments, pesajetWebhook } from '../controllers/payment.controller.js';
 
 const router = express.Router();
 
+// Updated schema to accept phone number and other gateway fields
 const depositSchema = {
  body: z.object({
   amount: z.number().positive(),
   method: z.string().min(2),
-  reference: z.string().optional()
+  email: z.string().optional(),
+  phoneNumber: z.string().optional(),
+  country: z.string().optional(),
+  reference: z.string().optional(),
+  description: z.string().optional(),
+  callback_url: z.string().optional(),
+  cardNumber: z.string().optional(),
+  cardExpiry: z.string().optional(),
+  cardCvv: z.string().optional(),
+  receipt: z.string().optional()
  })
 };
 
+// Webhook Route (Public - PesaJet calls this)
+router.post('/webhook', pesajetWebhook);
+
+// User Routes
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
 router.get('/', protect, getPayments);
 
