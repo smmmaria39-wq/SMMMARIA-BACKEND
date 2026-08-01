@@ -1,13 +1,16 @@
 // ===============================================
-// Cron Job: Sync Order Statuses
-// Runs every 5 minutes
+// Cron Jobs: Sync Orders & Check Pending Payments
 // ===============================================
 
 import cron from 'node-cron';
 import { getRef } from '../database/firebase.js';
 import { fetchSupplierOrderStatus } from '../services/order.service.js';
+import { checkPendingPayments } from '../controllers/payment.controller.js'; // NEW IMPORT
 import { logger } from '../utils/logger.js';
 
+// ==========================================
+// JOB 1: Sync Order Statuses (Every 5 minutes)
+// ==========================================
 export const startOrderSyncJob = () => {
  cron.schedule('*/5 * * * *', async () => {
   logger.info('⏳ [Cron] Running order sync job...');
@@ -99,4 +102,18 @@ export const startOrderSyncJob = () => {
    logger.error(`[Cron] Order sync job failed: ${error.message}`);
   }
  });
+};
+
+// ==========================================
+// JOB 2: Check Pending PesaJet Payments (Every 2 minutes)
+// ==========================================
+export const startPaymentSyncJob = () => {
+  cron.schedule('*/2 * * * *', async () => {
+    logger.info('⏳ [Cron] Running pending payments check...');
+    try {
+      await checkPendingPayments();
+    } catch (error) {
+      logger.error(`[Cron] Payment sync job failed: ${error.message}`);
+    }
+  });
 };
