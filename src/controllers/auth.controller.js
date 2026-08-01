@@ -9,9 +9,9 @@ import { generateUUID, generateApiKey, generateReferralCode } from '../utils/hel
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 
-// Helper to generate a short, unique Account ID (e.g., SM-1A2B3C)
+// Helper to generate a short, unique 6-digit numeric Account ID (e.g., 693045)
 const generateShortAccountId = () => {
-    return 'SM-' + Math.random().toString(36).substr(2, 6).toUpperCase();
+    return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
 /**
@@ -42,12 +42,12 @@ export const registerUser = async (req, res, next) => {
   const userId = generateUUID();
   const apiKey = generateApiKey();
   const referralCode = generateReferralCode(username);
-  const accountId = generateShortAccountId(); // For passwordless login
+  const accountId = generateShortAccountId(); // Now generates a 6-digit number
   
   // Create user object
   const newUser = {
    id: userId,
-   accountId, // Save the short ID
+   accountId, // Save the 6-digit ID
    fullname: fullname || '',
    username,
    email,
