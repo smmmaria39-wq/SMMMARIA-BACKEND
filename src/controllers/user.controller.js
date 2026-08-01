@@ -13,17 +13,25 @@ import crypto from 'crypto'; // Import Node.js built-in crypto module
  */
 export const updateProfile = async (req, res, next) => {
  try {
-  const { username, country, phone } = req.body;
+  // 1. Added 'fullname' to the destructured body
+  const { fullname, username, country, phone } = req.body;
   const userId = req.user.id;
   
   const updates = {};
+  // 2. Added fullname to the updates object
+  if (fullname) updates.fullname = fullname;
   if (username) updates.username = username;
   if (country) updates.country = country;
   if (phone) updates.phone = phone;
   
   await getRef(`users/${userId}`).update(updates);
   
-  return successResponse(res, 'Profile updated successfully');
+  // 3. Fetch the updated user to send back to the frontend
+  const updatedSnapshot = await getRef(`users/${userId}`).get();
+  const updatedUser = updatedSnapshot.val();
+  delete updatedUser.password; // Never send password back
+  
+  return successResponse(res, 'Profile updated successfully', updatedUser);
  } catch (error) {
   next(error);
  }
