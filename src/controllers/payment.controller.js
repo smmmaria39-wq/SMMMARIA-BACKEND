@@ -14,26 +14,24 @@ const USD_TO_UGX_RATE = 3730;
 // HELPER: Process MTN/Airtel via PesaJet API
 // ==========================================
 const processPesaJetPayment = async (payload) => {
-  const PESAJET_API_KEY = process.env.PESAJET_API_KEY; // Your Public API Key
-  const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/transactions'; // Update to exact PesaJet endpoint if different
+  const PESAJET_API_KEY = process.env.PESAJET_API_KEY;
+  const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/transactions';
 
   if (!PESAJET_API_KEY) {
     throw new Error('PesaJet API key is not configured in Railway.');
   }
 
-  // Log the exact payload being sent so we can see it in Railway logs
   console.log("Sending to PesaJet:", JSON.stringify(payload));
 
   const response = await fetch(PESAJET_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-API-KEY': PESAJET_API_KEY // PesaJet uses X-API-KEY header
+      'X-API-KEY': PESAJET_API_KEY
     },
     body: JSON.stringify(payload)
   });
 
-  // Safely handle the response whether it's JSON or Text
   const responseText = await response.text();
   
   try {
@@ -41,9 +39,8 @@ const processPesaJetPayment = async (payload) => {
     if (!response.ok) {
       throw new Error(result.message || 'PesaJet API declined the transaction.');
     }
-    return result; // Contains transactionId
+    return result;
   } catch (e) {
-    // If it's not JSON, throw the raw text so you can see exactly what PesaJet said
     throw new Error(`PesaJet Error: ${responseText}`);
   }
 };
@@ -70,11 +67,11 @@ export const createDeposit = async (req, res, next) => {
     const paymentData = {
       id: paymentId,
       userId,
-      amount: parseFloat(amount), // Keep in USD for your internal records
+      amount: parseFloat(amount),
       bonus: bonus,
       totalCredit: totalCredit,
       method,
-      status: 'pending', // Starts as pending
+      status: 'pending',
       createdAt: new Date().toISOString()
     };
 
@@ -110,34 +107,29 @@ export const createDeposit = async (req, res, next) => {
       try {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
         
-        // Convert USD amount to UGX for the PesaJet API
         const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
         
-        // Format phone number to +256XXXXXXXXX (PesaJet requires the + sign)
         let formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
         if (formattedPhone.startsWith('0')) {
           formattedPhone = '256' + formattedPhone.substring(1);
         } else if (!formattedPhone.startsWith('256')) {
           formattedPhone = '256' + formattedPhone;
         }
-        formattedPhone = '+' + formattedPhone; // Add the + sign back
+        formattedPhone = '+' + formattedPhone;
 
         // Construct payload exactly as PesaJet documentation requests
         let gatewayPayload = { 
           type: "COLLECTION", 
           amount: amountInUGX, 
           currency: "UGX",
-          phoneNumber: formattedPhone
+          phoneNumber: formattedPhone,
+          provider: method // <--- ADDED THIS: Sends "mtn" or "airtel" to PesaJet
         };
 
-        // Call PesaJet API
         const gatewayResponse = await processPesaJetPayment(gatewayPayload);
         
-        // Save the PesaJet transaction ID so we can track it later
         paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.id || 'N/A';
         
-        // Save to Firebase as PENDING. Do not credit wallet yet.
-        // The wallet will be credited when PesaJet sends a Webhook confirming the user paid.
         await getRef(`payments/${paymentId}`).set(paymentData);
         await getRef(`transactions/${paymentId}`).set({
           id: paymentId,
@@ -153,7 +145,6 @@ export const createDeposit = async (req, res, next) => {
 
       } catch (apiError) {
         logger.error(`PesaJet API Error: ${apiError.message}`);
-        // Save failed attempt for records
         paymentData.status = 'rejected';
         paymentData.failureReason = apiError.message;
         await getRef(`payments/${paymentId}`).set(paymentData);
@@ -190,13 +181,9 @@ export const approvePayment = async (req, res, next) => {
       return errorResponse(res, 'Payment already approved', 400);
     }
     
-    // 1. Update Payment Status to Approved
     await paymentRef.update({ status: 'approved', approvedAt: new Date().toISOString() });
-    
-    // 2. Update Transaction Status
     await getRef(`transactions/${id}`).update({ status: 'approved' });
     
-    // 3. Atomically Credit User Wallet with Amount + Bonus
     const userBalanceRef = getRef(`users/${payment.userId}/balance`);
     await userBalanceRef.transaction((currentBalance) => {
       const creditAmount = payment.totalCredit || (parseFloat(payment.amount) + 0.20);
@@ -245,7 +232,6 @@ export const getPayments = async (req, res, next) => {
     const snapshot = await getRef('payments').get();
     let payments = snapshot.exists() ? Object.values(snapshot.val()).reverse() : [];
     
-    // Fetch all users to map their names to the payments
     const usersSnapshot = await getRef('users').get();
     const usersMap = {};
     if (usersSnapshot.exists()) {
@@ -255,13 +241,11 @@ export const getPayments = async (req, res, next) => {
       }
     }
 
-    // Attach the username to each payment object
     payments = payments.map(p => ({
       ...p,
       username: usersMap[p.userId] || 'Unknown User'
     }));
 
-    // If not admin, filter to only show the user's payments
     if (req.user.role === 'user') {
       payments = payments.filter(p => p.userId === req.user.id);
     }
