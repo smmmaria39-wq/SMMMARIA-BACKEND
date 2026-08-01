@@ -14,11 +14,11 @@ const USD_TO_UGX_RATE = 3730;
 // HELPER: Process MTN/Airtel via PesaJet API
 // ==========================================
 const processPesaJetPayment = async (payload) => {
-  const PESAJET_API_KEY = process.env.PESAJET_API_KEY;
-  const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/collections'; // Update to exact PesaJet endpoint
+  const PESAJET_API_KEY = process.env.PESAJET_API_KEY; // Your Public API Key
+  const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/transactions'; // Update to exact PesaJet endpoint if different
 
   if (!PESAJET_API_KEY) {
-    throw new Error('PesaJet API credentials are not configured in Railway.');
+    throw new Error('PesaJet API key is not configured in Railway.');
   }
 
   // Log the exact payload being sent so we can see it in Railway logs
@@ -28,18 +28,18 @@ const processPesaJetPayment = async (payload) => {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${PESAJET_API_KEY}` // PesaJet typically uses Bearer tokens
+      'X-API-KEY': PESAJET_API_KEY // PesaJet uses X-API-KEY header
     },
     body: JSON.stringify(payload)
   });
 
   const result = await response.json();
 
-  if (!response.ok || result.status !== 'success') {
+  if (!response.ok) {
     throw new Error(result.message || 'PesaJet API declined the transaction.');
   }
 
-  return result; // Contains gateway reference/transaction ID
+  return result; // Contains transactionId
 };
 
 /**
@@ -50,7 +50,7 @@ const processPesaJetPayment = async (payload) => {
 export const createDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { amount, method, email, phoneNumber, cardNumber, cardExpiry, cardCvv } = req.body;
+    const { amount, method, email, phoneNumber } = req.body;
     
     if (amount <= 0) {
       return errorResponse(res, 'Amount must be greater than 0', 400);
@@ -81,7 +81,7 @@ export const createDeposit = async (req, res, next) => {
         id: paymentId,
         userId,
         type: 'deposit',
-        amount: totalCredit, // Store the total credited amount in ledger
+        amount: totalCredit,
         status: 'pending',
         date: new Date().toISOString()
       });
@@ -107,52 +107,43 @@ export const createDeposit = async (req, res, next) => {
         // Convert USD amount to UGX for the PesaJet API
         const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
         
-        // Format phone number to 256XXXXXXXXX
+        // Format phone number to +256XXXXXXXXX (PesaJet requires the + sign)
         let formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
         if (formattedPhone.startsWith('0')) {
           formattedPhone = '256' + formattedPhone.substring(1);
         } else if (!formattedPhone.startsWith('256')) {
           formattedPhone = '256' + formattedPhone;
         }
+        formattedPhone = '+' + formattedPhone; // Add the + sign back
 
-        // Construct payload for PesaJet based on standard API structures
+        // Construct payload exactly as PesaJet documentation requests
         let gatewayPayload = { 
+          type: "COLLECTION", 
           amount: amountInUGX, 
           currency: "UGX",
-          phone_number: formattedPhone,
-          network: method === 'mtn' ? "MTN_MOMO" : "AIRTEL_MONEY",
-          reference: `SMMMARIA-${paymentId.substring(0, 8)}`, 
-          description: "Wallet Deposit", 
-          email: email || "support@smmmaria.com",
-          callback_url: "https://smmaria.netlify.app/api/v1/payments/webhook" 
+          phoneNumber: formattedPhone
         };
 
         // Call PesaJet API
         const gatewayResponse = await processPesaJetPayment(gatewayPayload);
-
-        // If API succeeds, update payment data to approved
-        paymentData.status = 'approved';
-        paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.reference || 'N/A';
-
-        // Save to Firebase (Internal records stay in USD)
+        
+        // Save the PesaJet transaction ID so we can track it later
+        paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.id || 'N/A';
+        
+        // Save to Firebase as PENDING. Do not credit wallet yet.
+        // The wallet will be credited when PesaJet sends a Webhook confirming the user paid.
         await getRef(`payments/${paymentId}`).set(paymentData);
         await getRef(`transactions/${paymentId}`).set({
           id: paymentId,
           userId,
           type: 'deposit',
           amount: totalCredit,
-          status: 'approved',
+          status: 'pending',
           date: new Date().toISOString()
         });
 
-        // Atomically Credit User Wallet (Amount + $0.20 Bonus)
-        const userBalanceRef = getRef(`users/${userId}/balance`);
-        await userBalanceRef.transaction((currentBalance) => {
-          return (currentBalance || 0) + totalCredit;
-        });
-
-        logger.success(`Automated deposit successful: ${paymentId} for user ${userId}. Credited $${totalCredit}`);
-        return successResponse(res, 'Deposit successful! Wallet credited automatically.', paymentData, 201);
+        logger.info(`PesaJet Collection initiated: ${paymentId}. Waiting for user to approve phone prompt.`);
+        return successResponse(res, 'Payment request sent to your phone. Please approve the prompt to complete the deposit.', paymentData, 201);
 
       } catch (apiError) {
         logger.error(`PesaJet API Error: ${apiError.message}`);
@@ -165,7 +156,6 @@ export const createDeposit = async (req, res, next) => {
       }
     }
     
-    // Fallback if an unknown method is sent
     return errorResponse(res, 'Invalid payment method selected.', 400);
     
   } catch (error) {
@@ -203,7 +193,6 @@ export const approvePayment = async (req, res, next) => {
     // 3. Atomically Credit User Wallet with Amount + Bonus
     const userBalanceRef = getRef(`users/${payment.userId}/balance`);
     await userBalanceRef.transaction((currentBalance) => {
-      // Use totalCredit if it exists, otherwise fallback to amount + 0.20 (for old records)
       const creditAmount = payment.totalCredit || (parseFloat(payment.amount) + 0.20);
       return (currentBalance || 0) + creditAmount;
     });
