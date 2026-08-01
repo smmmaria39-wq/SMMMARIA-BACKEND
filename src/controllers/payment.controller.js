@@ -33,13 +33,19 @@ const processPesaJetPayment = async (payload) => {
     body: JSON.stringify(payload)
   });
 
-  const result = await response.json();
-
-  if (!response.ok) {
-    throw new Error(result.message || 'PesaJet API declined the transaction.');
+  // Safely handle the response whether it's JSON or Text
+  const responseText = await response.text();
+  
+  try {
+    const result = JSON.parse(responseText);
+    if (!response.ok) {
+      throw new Error(result.message || 'PesaJet API declined the transaction.');
+    }
+    return result; // Contains transactionId
+  } catch (e) {
+    // If it's not JSON, throw the raw text so you can see exactly what PesaJet said
+    throw new Error(`PesaJet Error: ${responseText}`);
   }
-
-  return result; // Contains transactionId
 };
 
 /**
