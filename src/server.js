@@ -5,7 +5,7 @@
 import app from './app.js';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
-import { startOrderSyncJob } from './jobs/syncOrders.js';
+import { startOrderSyncJob, startPaymentSyncJob } from './jobs/syncOrders.js'; // Added startPaymentSyncJob
 import { startSupplierBalanceJob } from './jobs/checkSupplierBalance.js';
 
 const PORT = env.port;
@@ -17,7 +17,8 @@ const server = app.listen(PORT, () => {
  // Start Background Cron Jobs
  startOrderSyncJob();
  startSupplierBalanceJob();
- logger.success('⏳ Background jobs initialized (Order Sync & Balance Checker).');
+ startPaymentSyncJob(); // Added this line
+ logger.success('⏳ Background jobs initialized (Order Sync, Balance Checker & Payment Sync).');
 });
 
 // --- Graceful Shutdown Handling (Railway Compatibility) ---
@@ -41,4 +42,4 @@ process.on('SIGINT', () => {
 process.on('unhandledRejection', (err) => {
  logger.error(`Unhandled Rejection: ${err.message}`);
  server.close(() => process.exit(1));
-});
+}); 
