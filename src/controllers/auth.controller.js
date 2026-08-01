@@ -42,19 +42,19 @@ export const registerUser = async (req, res, next) => {
   const userId = generateUUID();
   const apiKey = generateApiKey();
   const referralCode = generateReferralCode(username);
-  const accountId = generateShortAccountId(); // Now generates a 6-digit number
+  const accountId = generateShortAccountId(); // Generates as a String
   
   // Create user object
   const newUser = {
    id: userId,
-   accountId, // Save the 6-digit ID
+   accountId, // Saved as String
    fullname: fullname || '',
    username,
    email,
    password: hashedPassword,
    country: country || '',
    phone: phone || '',
-   role: 'user', // Default role
+   role: 'user',
    status: 'active',
    balance: 0,
    spent: 0,
@@ -73,7 +73,6 @@ export const registerUser = async (req, res, next) => {
   
   logger.success(`New user registered: ${username} (Account ID: ${accountId})`);
   
-  // Return response (exclude password)
   const { password: pass, ...userWithoutPassword } = newUser;
   
   return successResponse(res, 'User registered successfully', { token, user: userWithoutPassword }, 201);
@@ -89,12 +88,14 @@ export const registerUser = async (req, res, next) => {
  */
 export const loginUser = async (req, res, next) => {
  try {
-  const { identifier, password } = req.body;
+  let { identifier, password } = req.body;
   
   if (!identifier) {
    return errorResponse(res, 'Please enter your email, username, or Account ID', 400);
   }
 
+  // Force identifier to string and trim it just in case
+  identifier = String(identifier).trim();
   let user = null;
 
   // 1. Try finding user by Email
@@ -111,11 +112,19 @@ export const loginUser = async (req, res, next) => {
     }
   }
 
-  // 3. Try finding user by Account ID
+  // 3. Try finding user by Account ID (Type-Safe Check)
   if (!user) {
+    // Try as String first
     snapshot = await getRef('users').orderByChild('accountId').equalTo(identifier).get();
     if (snapshot.exists()) {
      user = Object.values(snapshot.val())[0];
+    } else if (!isNaN(identifier)) {
+      // If not found and identifier is numeric, try querying as a Number type
+      // This fixes the issue if Firebase accidentally stored it as a Number
+      snapshot = await getRef('users').orderByChild('accountId').equalTo(Number(identifier)).get();
+      if (snapshot.exists()) {
+        user = Object.values(snapshot.val())[0];
+      }
     }
   }
 
@@ -125,8 +134,8 @@ export const loginUser = async (req, res, next) => {
   }
 
   // PASSWORD LOGIC: 
-  // If they logged in with Account ID, skip password check. Otherwise, require password.
-  const isAccountIdLogin = (user.accountId === identifier);
+  // Use String() to prevent type mismatch (e.g., Number vs String in DB)
+  const isAccountIdLogin = (String(user.accountId) === identifier);
 
   if (!isAccountIdLogin) {
    if (!password) {
@@ -171,7 +180,6 @@ export const googleAuth = async (req, res, next) => {
    return errorResponse(res, 'Google credential is missing', 400);
   }
 
-  // Verify Google Token using Google's tokeninfo endpoint
   const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
   const payload = await googleRes.json();
 
@@ -181,14 +189,12 @@ export const googleAuth = async (req, res, next) => {
 
   const { email, name, sub: googleId } = payload;
 
-  // Check if user already exists with this email
   let snapshot = await getRef('users').orderByChild('email').equalTo(email).get();
   let user = snapshot.exists() ? Object.values(snapshot.val())[0] : null;
 
-  // If user doesn't exist, register them automatically
   if (!user) {
    const userId = generateUUID();
-   const username = email.split('@')[0] + Math.floor(Math.random() * 100); // Ensure unique username
+   const username = email.split('@')[0] + Math.floor(Math.random() * 100);
    const accountId = generateShortAccountId();
    
    user = {
@@ -197,7 +203,7 @@ export const googleAuth = async (req, res, next) => {
     fullname: name || '',
     username,
     email,
-    password: '', // No password for Google users
+    password: '',
     country: '',
     phone: '',
     role: 'user',
@@ -214,11 +220,9 @@ export const googleAuth = async (req, res, next) => {
    await getRef(`users/${userId}`).set(user);
    logger.success(`New user registered via Google: ${email}`);
   } else {
-   // Update last login for existing user
    await getRef(`users/${user.id}/lastLogin`).set(new Date().toISOString());
   }
 
-  // Generate JWT
   const token = generateToken({ id: user.id, role: user.role });
   delete user.password;
 
