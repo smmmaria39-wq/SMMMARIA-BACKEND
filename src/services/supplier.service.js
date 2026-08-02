@@ -8,10 +8,15 @@ import { logger } from '../utils/logger.js';
 
 // --- FILTERING CONFIGURATION & HELPERS ---
 
+// Added variations to ensure we catch all of them
 const BLOCKED_COUNTRIES = [
-  'spain', 'egypt', 'china', 'russia', 'nigeria', 'canada', 'indonesia',
-  'france', 'italy', 'switzerland', 'korea', 'uae', 'united arab emirates',
-  'south africa', 'taiwan', 'japan', 'asia', 'asian'
+  'spain', 'spanish', 'egypt', 'egyptian', 'china', 'chinese', 'russia', 'russian', 
+  'nigeria', 'nigerian', 'canada', 'canadian', 'indonesia', 'indonesian', 
+  'france', 'french', 'italy', 'italian', 'switzerland', 'swiss', 
+  'korea', 'korean', 'uae', 'united arab emirates', 'dubai', 
+  'south africa', 'south african', 'taiwan', 'taiwanese', 'japan', 'japanese', 
+  'asia', 'asian', 'india', 'indian', 'pakistan', 'pakistani', 'bangladesh', 
+  'philippines', 'filipino', 'vietnam', 'vietnamese', 'thailand', 'thai'
 ];
 
 // Helper: Parse string time like "2 Hours", "1-3 Hours", "90 Minutes" to hours
@@ -54,21 +59,14 @@ const isServiceValid = (service) => {
   return true;
 };
 
-// Helper: Check country restrictions
+// Helper: Check country restrictions (STRICT BLOCK - NO EXCEPTIONS)
 const isCountryBlocked = (service) => {
   const textToSearch = `${service.name} ${service.category}`.toLowerCase();
   
   for (const loc of BLOCKED_COUNTRIES) {
-    // Use exact word matching to avoid blocking "Spain" inside "Spain Followers"
-    // but not blocking "France" inside "Français"
-    const regex = new RegExp(`\\b${loc}\\b`, 'i');
-    if (regex.test(textToSearch)) {
-      // EXCEPTION: If it's highly active/working (e.g., has refill enabled), allow it
-      const isHighlyActive = service.refill === '1' || service.refill === 1 || service.refill === true || service.refill === 'true';
-      if (isHighlyActive) {
-        return false; // Not blocked because it's high quality
-      }
-      return true; // Blocked
+    // Using includes() is safer for multi-word countries like "south africa"
+    if (textToSearch.includes(loc)) {
+      return true; // Blocked strictly
     }
   }
   return false; // Not in blocked list
@@ -102,15 +100,14 @@ export const fetchSupplierServices = async (apiUrl, apiKey) => {
       // 2. Ensure Service is Valid/Working (Price, Limits, < 24h Avg Time)
       if (!isServiceValid(svc)) continue;
       
-      // 3. Apply Country Blocks (with exception for highly active services)
+      // 3. Apply STRICT Country Blocks
       if (isCountryBlocked(svc)) continue;
 
       // 4. If it passed all filters, add it to our valid list
       validServices.push(svc);
       seenServices.add(svc.service);
-
-      // 5. Enforce 5000 service limit per supplier
-      if (validServices.length >= 5000) break;
+      
+      // NOTE: The 5000 limit has been removed. It will download all valid services.
     }
 
     // Log the exact numbers so you can see it working in Railway
