@@ -104,3 +104,52 @@ export const updateService = async (req, res, next) => {
   next(error);
  }
 };
+
+/**
+ * @desc    Admin: Delete a service completely
+ * @route   DELETE /api/v1/services/:id
+ */
+export const deleteService = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    // Remove the service from Firebase
+    await getRef(`services/${id}`).remove();
+    return successResponse(res, 'Service deleted successfully');
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Admin: Delete a category (Moves services to Uncategorized)
+ * @route   DELETE /api/v1/services/categories/:id
+ */
+export const deleteCategory = async (req, res, next) => {
+  try {
+    // The frontend will pass the category name as the ID parameter
+    const { id } = req.params;
+    const categoryName = decodeURIComponent(id);
+    
+    const snapshot = await getRef('services').get();
+    if (snapshot.exists()) {
+      const updates = {};
+      const servicesData = snapshot.val();
+      
+      // Find all services in this category and prepare to set them to 'Uncategorized'
+      for (const key in servicesData) {
+        if (servicesData[key].category === categoryName) {
+          updates[`services/${key}/category`] = 'Uncategorized';
+        }
+      }
+      
+      // Apply all updates in one go
+      if (Object.keys(updates).length > 0) {
+        await getRef().update(updates);
+      }
+    }
+    
+    return successResponse(res, `Category '${categoryName}' deleted. Services moved to Uncategorized.`);
+  } catch (error) {
+    next(error);
+  }
+};
