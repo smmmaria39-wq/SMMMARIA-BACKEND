@@ -16,30 +16,36 @@ const BLOCKED_COUNTRIES = [
 
 // Helper: Parse string time like "2 Hours", "1-3 Hours", "90 Minutes" to hours
 const parseAverageTimeToHours = (avgTime) => {
-  if (!avgTime || typeof avgTime !== 'string') return 999; // Exclude if no time data
-  const lowerStr = avgTime.toLowerCase();
-  let hours = 0;
+  if (!avgTime) return 0; // If empty, assume instant (0 hours)
+  const lowerStr = String(avgTime).toLowerCase();
+  
   const nums = lowerStr.match(/\d+/g);
-  if (!nums) return 999;
+  if (!nums) return 0; // If no numbers, assume instant
+  
   const maxNum = Math.max(...nums.map(Number));
 
   if (lowerStr.includes('minute')) {
-    hours = maxNum / 60;
+    return maxNum / 60;
+  } else if (lowerStr.includes('day')) {
+    return maxNum * 24;
   } else {
-    hours = maxNum; // Assume hours if not minutes
+    return maxNum; // Assume hours
   }
-  return hours;
 };
 
 // Helper: Check if service is fundamentally working/active
 const isServiceValid = (service) => {
   const rate = parseFloat(service.rate);
-  const min = parseInt(service.min);
-  const max = parseInt(service.max);
+  let min = parseInt(service.min);
+  let max = parseInt(service.max);
   
-  // Must have valid price and limits (Working Service)
+  // Must have a valid price
   if (isNaN(rate) || rate <= 0) return false;
-  if (isNaN(min) || isNaN(max) || min < 0 || max <= min) return false;
+  
+  // Handle limits (0 often means unlimited in SMM APIs)
+  if (isNaN(min) || min < 0) min = 0;
+  if (isNaN(max) || max < 0) max = 0;
+  if (max !== 0 && max < min) return false; // If max isn't unlimited, it must be higher than min
   
   // Average Time must be under 24 hours
   const avgHours = parseAverageTimeToHours(service.average_time);
@@ -53,7 +59,10 @@ const isCountryBlocked = (service) => {
   const textToSearch = `${service.name} ${service.category}`.toLowerCase();
   
   for (const loc of BLOCKED_COUNTRIES) {
-    if (textToSearch.includes(loc)) {
+    // Use exact word matching to avoid blocking "Spain" inside "Spain Followers"
+    // but not blocking "France" inside "Français"
+    const regex = new RegExp(`\\b${loc}\\b`, 'i');
+    if (regex.test(textToSearch)) {
       // EXCEPTION: If it's highly active/working (e.g., has refill enabled), allow it
       const isHighlyActive = service.refill === '1' || service.refill === 1 || service.refill === true || service.refill === 'true';
       if (isHighlyActive) {
@@ -69,7 +78,6 @@ const isCountryBlocked = (service) => {
 
 /**
  * Fetch services from an external supplier API
- * Filters: Only working, no duplicates, no blocked countries (unless highly active), < 24h avg time, limit 5000.
  * @param {String} apiUrl - Supplier API URL
  * @param {String} apiKey - Supplier API Key
  * @returns {Promise<Array>} - Array of filtered, high-quality services
@@ -105,6 +113,7 @@ export const fetchSupplierServices = async (apiUrl, apiKey) => {
       if (validServices.length >= 5000) break;
     }
 
+    // Log the exact numbers so you can see it working in Railway
     logger.info(`Sync Filter: Downloaded ${validServices.length} valid working services (Filtered out ${rawServices.length - validServices.length}).`);
     return validServices;
 
