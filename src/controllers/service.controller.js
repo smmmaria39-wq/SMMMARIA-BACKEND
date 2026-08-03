@@ -152,3 +152,32 @@ export const deleteCategory = async (req, res, next) => {
     next(error);
   }
 };
+/**
+ * @desc    Admin: Bulk update service prices (Fixes rate-limiting & crashes)
+ * @route   PUT /api/v1/services/bulk-update
+ * @access  Private/Admin
+ */
+export const bulkUpdateServices = async (req, res, next) => {
+  try {
+    const { updates } = req.body; // Expecting an array: [{ id: "123", sellingPrice: 1.50 }, ...]
+    
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return errorResponse(res, 'No updates provided', 400);
+    }
+
+    const updatesObj = {};
+    updates.forEach(upd => {
+      if (upd.id && upd.sellingPrice !== undefined) {
+        // Prepare Firebase multi-location update
+        updatesObj[`services/${upd.id}/sellingPrice`] = parseFloat(upd.sellingPrice);
+      }
+    });
+
+    // Execute a single, lightning-fast batch update to Firebase
+    await getRef().update(updatesObj);
+    
+    return successResponse(res, `${updates.length} services updated successfully`);
+  } catch (error) {
+    next(error);
+  }
+};
