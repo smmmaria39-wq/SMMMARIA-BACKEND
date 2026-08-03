@@ -7,7 +7,6 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-// Added generateApiKey to the imports below:
 import { updateProfile, getAllUsers, updateUserStatus, generateApiKey } from '../controllers/user.controller.js';
 
 const router = express.Router();
@@ -15,6 +14,7 @@ const router = express.Router();
 // Validation Schemas
 const updateProfileSchema = {
  body: z.object({
+  fullname: z.string().optional(), // <--- ADDED THIS
   username: z.string().min(3).max(20).optional(),
   country: z.string().optional(),
   phone: z.string().optional()
@@ -29,7 +29,7 @@ const statusSchema = {
 
 // Routes
 router.put('/profile', protect, validate(updateProfileSchema), updateProfile);
-router.post('/apikey', protect, generateApiKey); // <-- Added the API Key route
+router.post('/apikey', protect, generateApiKey); 
 
 // Admin Routes
 router.get('/', protect, admin, getAllUsers);
