@@ -102,6 +102,36 @@ export const createOrder = async (req, res, next) => {
         // Update user's total spent
         await getRef(`users/${userId}/spent`).transaction((currentSpent) => (currentSpent || 0) + charge);
 
+        // ==========================================
+        // AFFILIATE COMMISSION LOGIC
+        // ==========================================
+        // Fetch the user object to check if they were referred by someone
+        const userSnap = await getRef(`users/${userId}`).get();
+        if (userSnap.exists()) {
+            const userObj = userSnap.val();
+            if (userObj.referredBy) {
+                const commissionRate = 0.05; // 5% commission rate
+                const commission = parseFloat((charge * commissionRate).toFixed(2));
+                
+                if (commission > 0) {
+                    // 1. Add commission to the referrer's main wallet balance
+                    const referrerBalanceRef = getRef(`users/${userObj.referredBy}/balance`);
+                    await referrerBalanceRef.transaction((currentBalance) => {
+                        return (currentBalance || 0) + commission;
+                    });
+                    
+                    // 2. Add commission to the referrer's total referralCommission tracker
+                    const referrerCommissionRef = getRef(`users/${userObj.referredBy}/referralCommission`);
+                    await referrerCommissionRef.transaction((currentComm) => {
+                        return (currentComm || 0) + commission;
+                    });
+
+                    logger.info(`Paid $${commission} affiliate commission to ${userObj.referredBy}`);
+                }
+            }
+        }
+        // ==========================================
+
         logger.success(`Order ${orderId} created for user ${userId}`);
         return successResponse(res, 'Order placed successfully', orderData, 201);
 
