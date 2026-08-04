@@ -77,12 +77,13 @@ export const childRegister = async (req, res, next) => {
 export const childLogin = async (req, res, next) => {
  try {
   let panel = req.panelContext;
-  const { email, password } = req.body; // 'email' acts as identifier (username, email, or accountId)
+  // Updated to use 'identifier' to match the frontend payload
+  const { identifier, password } = req.body; 
 
   // 1. Check if logging in via Main SMMMARIA Account ID (Passwordless)
   // Account IDs are numeric (e.g., 6-digit numbers)
-  if (email && !isNaN(email)) {
-    const ownerSnap = await getRef('users').orderByChild('accountId').equalTo(email).get();
+  if (identifier && !isNaN(identifier)) {
+    const ownerSnap = await getRef('users').orderByChild('accountId').equalTo(identifier).get();
     if (ownerSnap.exists()) {
       const owner = Object.values(ownerSnap.val())[0];
       // Verify this user owns a panel
@@ -108,7 +109,7 @@ export const childLogin = async (req, res, next) => {
 
   // 2. If panel context is missing (e.g. testing on main domain), try to find panel by admin username
   if (!panel) {
-   const panelSnap = await getRef('childPanels').orderByChild('info/admin/username').equalTo(email).get();
+   const panelSnap = await getRef('childPanels').orderByChild('info/admin/username').equalTo(identifier).get();
    if (panelSnap.exists()) {
     panel = Object.values(panelSnap.val())[0];
    }
@@ -117,7 +118,7 @@ export const childLogin = async (req, res, next) => {
   // 3. Check if logging in as the RESELLER OWNER (Using Panel Admin Username)
   if (panel && panel.info && panel.info.admin) {
    // Check if identifier matches admin username
-   if (panel.info.admin.username === email) {
+   if (panel.info.admin.username === identifier) {
     const isMatch = await comparePassword(password, panel.info.admin.password);
     if (!isMatch) return errorResponse(res, 'Invalid credentials', 401);
     
@@ -149,7 +150,7 @@ export const childLogin = async (req, res, next) => {
   
   const usersArr = Object.values(usersSnap.val());
   // Child users can login with email or username
-  const user = usersArr.find(u => u.email === email || u.username === email);
+  const user = usersArr.find(u => u.email === identifier || u.username === identifier);
   
   if (!user) return errorResponse(res, 'Invalid credentials', 401);
   if (user.status !== 'active') return errorResponse(res, 'Account suspended', 403);
