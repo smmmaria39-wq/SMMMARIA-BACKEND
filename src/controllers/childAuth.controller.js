@@ -76,42 +76,44 @@ export const childRegister = async (req, res, next) => {
  */
 export const childLogin = async (req, res, next) => {
   try {
-    const panel = req.panelContext;
-    const { email, password } = req.body; // 'email' field actually accepts email, username, or accountId
+    let panel = req.panelContext;
+    const { email, password } = req.body; // 'email' acts as identifier (username)
 
-    // 1. First, check if the person logging in is the RESELLER OWNER
-    // Check by Email
-    let ownerSnap = await getRef('users').orderByChild('email').equalTo(email).get();
-    
-    // If not found by email, check by Username
-    if (!ownerSnap.exists()) {
-      ownerSnap = await getRef('users').orderByChild('username').equalTo(email).get();
-    }
-    
-    // If not found by username, check by Account ID
-    if (!ownerSnap.exists()) {
-      ownerSnap = await getRef('users').orderByChild('accountId').equalTo(email).get();
-    }
-    
-    if (ownerSnap.exists()) {
-      const owner = Object.values(ownerSnap.val())[0];
-      
-      // If this user is a reseller
-      if (owner.role === 'reseller' && owner.childPanelId) {
-        const isMatch = await comparePassword(password, owner.password);
-        if (!isMatch) return errorResponse(res, 'Invalid credentials', 401);
-        
-        delete owner.password;
-        // Generate token with childPanelId so the backend knows which panel they own
-        const token = generateToken({ id: owner.id, role: 'reseller', childPanelId: owner.childPanelId });
-        return successResponse(res, 'Login successful', { token, user: owner });
-      } else {
-        // If they are a standard user, they shouldn't be logging in here
-        return errorResponse(res, 'You do not own a Child Panel. Please purchase one first.', 403);
+    // 1. If panel context is missing (e.g. testing on main domain), try to find panel by admin username
+    if (!panel) {
+      const panelSnap = await getRef('childPanels').orderByChild('info/admin/username').equalTo(email).get();
+      if (panelSnap.exists()) {
+        panel = Object.values(panelSnap.val())[0];
       }
     }
 
-    // 2. If not the owner, we MUST have a panel context to log in a child user
+    // 2. Check if logging in as the RESELLER OWNER
+    if (panel && panel.info && panel.info.admin) {
+      // Check if identifier matches admin username
+      if (panel.info.admin.username === email) {
+        const isMatch = await comparePassword(password, panel.info.admin.password);
+        if (!isMatch) return errorResponse(res, 'Invalid credentials', 401);
+        
+        // Generate token. We use ownerId so the backend knows whose main wallet to deduct
+        const token = generateToken({ 
+          id: panel.info.ownerId, 
+          role: 'reseller', 
+          childPanelId: panel.info.panelId 
+        });
+        
+        return successResponse(res, 'Login successful', { 
+          token, 
+          user: { 
+            id: panel.info.ownerId,
+            username: panel.info.admin.username, 
+            role: 'reseller',
+            balance: 0 // Balance is fetched dynamically on the dashboard via getMe
+          } 
+        });
+      }
+    }
+
+    // 3. If not the owner, check if they are a CHILD USER on this panel
     if (!panel) return errorResponse(res, 'Panel context not found. Please access via your subdomain.', 404);
 
     const panelId = panel.info.panelId;
@@ -149,12 +151,25 @@ export const getMe = async (req, res, next) => {
     const role = req.user.role;
 
     if (role === 'reseller') {
-      // Fetch from main users node
+      const childPanelId = req.user.childPanelId;
+      
+      // Fetch main user wallet balance
       const userSnap = await getRef(`users/${userId}`).get();
       if (!userSnap.exists()) return errorResponse(res, 'User not found', 404);
       const user = userSnap.val();
-      delete user.password;
-      return successResponse(res, 'User fetched', user);
+      
+      // Fetch panel admin username
+      const panelInfoSnap = await getRef(`childPanels/${childPanelId}/info`).get();
+      const panelInfo = panelInfoSnap.exists() ? panelInfoSnap.val() : {};
+      
+      return successResponse(res, 'User fetched', {
+        id: userId,
+        username: panelInfo.admin?.username || user.username,
+        email: user.email,
+        role: 'reseller',
+        balance: user.balance || 0, // Fetch main wallet balance
+        childPanelId: childPanelId
+      });
     } else if (role === 'child_user') {
       // Fetch from child panel users node
       const panelId = req.user.panelId;
