@@ -367,7 +367,6 @@ export const adminCreateChildPanel = async (req, res, next) => {
 // ===============================================
 // ANNOUNCEMENTS FUNCTIONS
 // ===============================================
-
 /**
  * @desc    Get announcements for a specific child panel
  * @route   GET /api/v1/child-panel/announcements
@@ -375,8 +374,14 @@ export const adminCreateChildPanel = async (req, res, next) => {
  */
 export const getPanelAnnouncements = async (req, res, next) => {
   try {
-    // Works for both reseller (childPanelId) and child user (panelId)
-    const panelId = req.user.childPanelId || req.user.panelId;
+    let panelId = req.user.childPanelId || req.user.panelId;
+    
+    // Fallback: Fetch from database if middleware didn't pass childPanelId
+    if (!panelId) {
+      const userSnap = await getRef(`users/${req.user.id}/childPanelId`).get();
+      panelId = userSnap.exists() ? userSnap.val() : null;
+    }
+    
     if (!panelId) return errorResponse(res, 'Panel ID not found', 400);
 
     const snap = await getRef(`childPanels/${panelId}/announcements`).get();
@@ -395,7 +400,14 @@ export const getPanelAnnouncements = async (req, res, next) => {
  */
 export const createPanelAnnouncement = async (req, res, next) => {
   try {
-    const panelId = req.user.childPanelId;
+    let panelId = req.user.childPanelId;
+    
+    // Fallback: Fetch from database if middleware didn't pass childPanelId
+    if (!panelId) {
+      const userSnap = await getRef(`users/${req.user.id}/childPanelId`).get();
+      panelId = userSnap.exists() ? userSnap.val() : null;
+    }
+
     if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
 
     const { title, message } = req.body;
@@ -423,10 +435,19 @@ export const createPanelAnnouncement = async (req, res, next) => {
  */
 export const deletePanelAnnouncement = async (req, res, next) => {
   try {
-    const panelId = req.user.childPanelId;
-    const { id } = req.params;
+    let panelId = req.user.childPanelId;
+    
+    // Fallback: Fetch from database if middleware didn't pass childPanelId
+    if (!panelId) {
+      const userSnap = await getRef(`users/${req.user.id}/childPanelId`).get();
+      panelId = userSnap.exists() ? userSnap.val() : null;
+    }
 
+    if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
+
+    const { id } = req.params;
     await getRef(`childPanels/${panelId}/announcements/${id}`).remove();
+    
     return successResponse(res, 'Announcement deleted successfully');
   } catch (error) {
     next(error);
