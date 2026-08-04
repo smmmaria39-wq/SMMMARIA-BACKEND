@@ -38,15 +38,16 @@ export const getPanelServices = async (req, res, next) => {
         if (svc.status === 'active') {
           services.push({
             id: key,
-            serviceName: svc.serviceName,
-            categoryId: svc.categoryId,
-            // Exposing the Main Panel's costPrice so the reseller knows their wholesale cost.
-            // We intentionally DO NOT send any supplier fields (e.g., supplierId, supplierServiceId, supplierPrice).
-            costPrice: svc.costPrice, 
-            // Reseller's custom price, or fallback to wholesale cost if they haven't set a price yet
-            sellingPrice: panelPricing[key]?.sellingPrice || svc.costPrice, 
-            minimum: svc.minimum,
-            maximum: svc.maximum,
+            // Reverted to 'name' and 'category' so the frontend doesn't show "undefined"
+            name: svc.name,
+            category: svc.category,
+            // FIX: The reseller's cost price is the Main Panel's sellingPrice.
+            // We completely hide svc.costPrice (the supplier price).
+            costPrice: svc.sellingPrice, 
+            // Reseller's custom price, or fallback to main panel selling price if not set
+            sellingPrice: panelPricing[key]?.sellingPrice || svc.sellingPrice, 
+            min: svc.min,
+            max: svc.max,
             refill: svc.refill,
             cancel: svc.cancel,
             description: svc.description,
@@ -97,17 +98,18 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
         const mainService = mainServices[upd.id];
 
         if (mainService) {
-          // Validation: Reseller selling price must be >= Main Panel wholesale cost (costPrice)
-          if (newPrice < mainService.costPrice) {
+          // FIX: Validation must check against the Main Panel's sellingPrice
+          if (newPrice < mainService.sellingPrice) {
             invalidPrices.push({
-              serviceName: mainService.serviceName,
-              attemptedPrice: newPrice
+              name: mainService.name,
+              attemptedPrice: newPrice,
+              minPrice: mainService.sellingPrice
             });
           } else {
             // Save ONLY to the child panel's isolated pricing node
             updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = newPrice;
-            // Calculate and store profit automatically based on wholesale cost
-            updatesObj[`childPanels/${panelId}/pricing/${upd.id}/profit`] = newPrice - mainService.costPrice;
+            // Calculate and store profit automatically based on main panel selling price
+            updatesObj[`childPanels/${panelId}/pricing/${upd.id}/profit`] = newPrice - mainService.sellingPrice;
             // Store timestamp as required by documentation
             updatesObj[`childPanels/${panelId}/pricing/${upd.id}/updatedAt`] = timestamp;
           }
@@ -116,7 +118,7 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
     });
 
     if (invalidPrices.length > 0) {
-      return errorResponse(res, `Pricing error: Selling price cannot be lower than your wholesale cost ($${invalidPrices[0].minPrice}) for ${invalidPrices[0].serviceName}.`, 400);
+      return errorResponse(res, `Pricing error: Selling price cannot be lower than your wholesale cost ($${invalidPrices[0].minPrice}) for ${invalidPrices[0].name}.`, 400);
     }
 
     if (Object.keys(updatesObj).length > 0) {
