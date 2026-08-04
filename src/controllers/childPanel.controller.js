@@ -6,6 +6,7 @@ import { getRef } from '../database/firebase.js';
 import { generateUUID } from '../utils/helpers.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
+import { hashPassword } from '../utils/bcrypt.js'; // ADDED THIS IMPORT
 
 /**
  * @desc    Purchase and provision a new Child Panel
@@ -15,11 +16,11 @@ import { logger } from '../utils/logger.js';
 export const purchaseChildPanel = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        const { plan, price, panelName, subdomain } = req.body;
+        const { plan, price, panelName, subdomain, adminUsername, adminPassword } = req.body;
 
         // 1. Validate Input
-        if (!plan || !price || !panelName || !subdomain) {
-            return errorResponse(res, 'Please provide plan, price, panel name, and subdomain', 400);
+        if (!plan || !price || !panelName || !subdomain || !adminUsername || !adminPassword) {
+            return errorResponse(res, 'Please provide plan, price, panel name, subdomain, and admin credentials', 400);
         }
 
         const cleanSubdomain = subdomain.toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -46,7 +47,10 @@ export const purchaseChildPanel = async (req, res, next) => {
             return errorResponse(res, 'Insufficient wallet balance to purchase this panel.', 400);
         }
 
-        // 4. Create the Child Panel Record in Firebase
+        // 4. Hash the Admin Password for the reseller dashboard login
+        const hashedAdminPassword = await hashPassword(adminPassword);
+
+        // 5. Create the Child Panel Record in Firebase
         const panelId = generateUUID();
         const createdAt = new Date().toISOString();
 
@@ -56,10 +60,15 @@ export const purchaseChildPanel = async (req, res, next) => {
                 panelName: panelName,
                 ownerId: userId,
                 subdomain: cleanSubdomain,
-                customDomain: null, // Can be added later by reseller
+                customDomain: null,
                 status: 'active',
                 plan: plan,
-                createdAt: createdAt
+                createdAt: createdAt,
+                // SAVE ADMIN CREDENTIALS HERE
+                admin: {
+                    username: adminUsername,
+                    password: hashedAdminPassword
+                }
             },
             branding: {
                 logoUrl: '',
@@ -81,18 +90,18 @@ export const purchaseChildPanel = async (req, res, next) => {
             users: {},
             orders: {},
             transactions: {},
-            pricing: {} // They will set their custom prices here
+            pricing: {}
         };
 
         await getRef(`childPanels/${panelId}`).set(panelData);
 
-        // 5. Upgrade User Role to Reseller
+        // 6. Upgrade User Role to Reseller
         await getRef(`users/${userId}`).update({
             role: 'reseller',
             childPanelId: panelId
         });
 
-        logger.success(`Child Panel created: ${panelName} (${cleanSubdomain}.smmmaria.com) for user ${userId}`);
+        logger.success(`Child Panel created: ${panelName} (${cleanSubdomain}.smmmaria.netlify.app) for user ${userId}`);
 
         return successResponse(res, 'Child Panel purchased successfully! Proceed to your reseller dashboard.', { 
             panelId, 
@@ -173,8 +182,9 @@ export const updatePanelBranding = async (req, res, next) => {
         next(error);
     }
 };
+
 // ===============================================
-// SUPER ADMIN FUNCTIONS (Add to childPanel.controller.js)
+// SUPER ADMIN FUNCTIONS
 // ===============================================
 
 /**
@@ -290,7 +300,7 @@ export const fundChildPanelWallet = async (req, res, next) => {
  */
 export const adminCreateChildPanel = async (req, res, next) => {
     try {
-        const { panelName, ownerId, subdomain, plan } = req.body;
+        const { panelName, ownerId, subdomain, plan, adminUsername, adminPassword } = req.body;
         const cleanSubdomain = subdomain.toLowerCase().replace(/[^a-z0-9-]/g, '');
 
         // Check if user exists
@@ -300,6 +310,11 @@ export const adminCreateChildPanel = async (req, res, next) => {
         // Check if subdomain is taken
         const subdomainSnap = await getRef('childPanels').orderByChild('info/subdomain').equalTo(cleanSubdomain).get();
         if (subdomainSnap.exists()) return errorResponse(res, 'Subdomain already taken', 400);
+
+        // Provide fallback if admin doesn't provide credentials manually
+        const finalAdminUsername = adminUsername || `admin_${cleanSubdomain}`;
+        const finalAdminPassword = adminPassword || 'password123'; 
+        const hashedAdminPassword = await hashPassword(finalAdminPassword);
 
         const panelId = generateUUID();
         const createdAt = new Date().toISOString();
@@ -313,7 +328,11 @@ export const adminCreateChildPanel = async (req, res, next) => {
                 customDomain: null,
                 status: 'active',
                 plan: plan,
-                createdAt: createdAt
+                createdAt: createdAt,
+                admin: {
+                    username: finalAdminUsername,
+                    password: hashedAdminPassword
+                }
             },
             branding: {
                 logoUrl: '',
@@ -344,6 +363,11 @@ export const adminCreateChildPanel = async (req, res, next) => {
         next(error);
     }
 };
+
+// ===============================================
+// ANNOUNCEMENTS FUNCTIONS
+// ===============================================
+
 /**
  * @desc    Get announcements for a specific child panel
  * @route   GET /api/v1/child-panel/announcements
@@ -407,4 +431,4 @@ export const deletePanelAnnouncement = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-};
+}; 
