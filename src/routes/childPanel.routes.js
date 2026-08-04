@@ -16,7 +16,10 @@ import {
     getChildPanelDetails,
     updateChildPanelStatus,
     fundChildPanelWallet,
-    adminCreateChildPanel
+    adminCreateChildPanel,
+    getPanelAnnouncements, // <-- ADD THESE
+    createPanelAnnouncement, 
+    deletePanelAnnouncement
 } from '../controllers/childPanel.controller.js';
 
 import { childLogin, childRegister, getMe } from '../controllers/childAuth.controller.js'; // <-- ADDED getMe
