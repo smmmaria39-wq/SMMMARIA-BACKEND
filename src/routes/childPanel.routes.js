@@ -4,7 +4,7 @@
 
 import express from 'express';
 import { protect } from '../middleware/auth.js';
-import { admin } from '../middleware/admin.js'; // <-- FIXED IMPORT HERE
+import { admin } from '../middleware/admin.js';
 import { identifyPanel } from '../middleware/panelContext.js';
 
 // Controllers
@@ -19,7 +19,7 @@ import {
     adminCreateChildPanel
 } from '../controllers/childPanel.controller.js';
 
-import { childLogin, childRegister } from '../controllers/childAuth.controller.js';
+import { childLogin, childRegister, getMe } from '../controllers/childAuth.controller.js'; // <-- ADDED getMe
 import { getPanelUsers, updatePanelUserStatus, fundChildUser } from '../controllers/childUser.controller.js';
 import { getPanelServices, bulkUpdatePanelPrices } from '../controllers/childService.controller.js';
 import { getPanelTransactions, requestPanelDeposit } from '../controllers/childWallet.controller.js';
@@ -33,6 +33,7 @@ router.use(identifyPanel);
 // --- Public Child Panel Auth Routes ---
 router.post('/auth/register', childRegister);
 router.post('/auth/login', childLogin);
+router.get('/auth/me', protect, getMe); // <-- ADDED THIS ROUTE
 
 // --- Main User Routes (Buying & Managing Panel) ---
 router.post('/purchase', protect, purchaseChildPanel);
