@@ -17,12 +17,12 @@ import {
     updateChildPanelStatus,
     fundChildPanelWallet,
     adminCreateChildPanel,
-    getPanelAnnouncements, // <-- ADD THESE
+    getPanelAnnouncements, 
     createPanelAnnouncement, 
-    deletePanelAnnouncement
+    deletePanelAnnouncement 
 } from '../controllers/childPanel.controller.js';
 
-import { childLogin, childRegister, getMe } from '../controllers/childAuth.controller.js'; // <-- ADDED getMe
+import { childLogin, childRegister, getMe } from '../controllers/childAuth.controller.js';
 import { getPanelUsers, updatePanelUserStatus, fundChildUser } from '../controllers/childUser.controller.js';
 import { getPanelServices, bulkUpdatePanelPrices } from '../controllers/childService.controller.js';
 import { getPanelTransactions, requestPanelDeposit } from '../controllers/childWallet.controller.js';
@@ -36,7 +36,7 @@ router.use(identifyPanel);
 // --- Public Child Panel Auth Routes ---
 router.post('/auth/register', childRegister);
 router.post('/auth/login', childLogin);
-router.get('/auth/me', protect, getMe); // <-- ADDED THIS ROUTE
+router.get('/auth/me', protect, getMe);
 
 // --- Main User Routes (Buying & Managing Panel) ---
 router.post('/purchase', protect, purchaseChildPanel);
@@ -57,6 +57,13 @@ router.post('/wallet/deposit', protect, requestPanelDeposit);
 
 router.get('/orders', protect, getPanelOrders);
 router.post('/orders', protect, createChildOrder);
+
+// --- Announcements --- (PASTE THEM HERE)
+router.get('/announcements', protect, getPanelAnnouncements);
+router.post('/announcements', protect, createPanelAnnouncement);
+router.delete('/announcements/:id', protect, deletePanelAnnouncement);
+
+router.get('/tickets', protect, getPanelTickets); // If you have this route
 
 // --- Super Admin Routes ---
 router.get('/all', protect, admin, getAllPanels);
