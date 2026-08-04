@@ -77,10 +77,7 @@ export const childRegister = async (req, res, next) => {
 export const childLogin = async (req, res, next) => {
   try {
     const panel = req.panelContext;
-    if (!panel) return errorResponse(res, 'Panel context not found', 404);
-
     const { email, password } = req.body;
-    const panelId = panel.info.panelId;
 
     // 1. First, check if the person logging in is the RESELLER OWNER
     const ownerSnap = await getRef('users').orderByChild('email').equalTo(email).get();
@@ -88,19 +85,22 @@ export const childLogin = async (req, res, next) => {
     if (ownerSnap.exists()) {
       const owner = Object.values(ownerSnap.val())[0];
       
-      // If this user owns THIS specific panel
-      if (owner.role === 'reseller' && owner.childPanelId === panelId) {
+      // If this user is a reseller
+      if (owner.role === 'reseller' && owner.childPanelId) {
         const isMatch = await comparePassword(password, owner.password);
         if (!isMatch) return errorResponse(res, 'Invalid credentials', 401);
         
         delete owner.password;
         // Generate token with childPanelId so the backend knows which panel they own
-        const token = generateToken({ id: owner.id, role: 'reseller', childPanelId: panelId });
+        const token = generateToken({ id: owner.id, role: 'reseller', childPanelId: owner.childPanelId });
         return successResponse(res, 'Login successful', { token, user: owner });
       }
     }
 
-    // 2. If not the owner, check if they are a CHILD USER on this panel
+    // 2. If not the owner, we MUST have a panel context to log in a child user
+    if (!panel) return errorResponse(res, 'Panel context not found. Please access via your subdomain.', 404);
+
+    const panelId = panel.info.panelId;
     const usersSnap = await getRef(`childPanels/${panelId}/users`).get();
     if (!usersSnap.exists()) return errorResponse(res, 'Invalid credentials', 401);
 
