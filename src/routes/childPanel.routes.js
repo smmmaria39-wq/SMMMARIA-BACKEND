@@ -58,12 +58,10 @@ router.post('/wallet/deposit', protect, requestPanelDeposit);
 router.get('/orders', protect, getPanelOrders);
 router.post('/orders', protect, createChildOrder);
 
-// --- Announcements --- (PASTE THEM HERE)
+// --- Announcements ---
 router.get('/announcements', protect, getPanelAnnouncements);
 router.post('/announcements', protect, createPanelAnnouncement);
 router.delete('/announcements/:id', protect, deletePanelAnnouncement);
-
-router.get('/tickets', protect, getPanelTickets); // If you have this route
 
 // --- Super Admin Routes ---
 router.get('/all', protect, admin, getAllPanels);
