@@ -12,8 +12,15 @@ import { successResponse, errorResponse } from '../utils/response.js';
  */
 export const getPanelServices = async (req, res, next) => {
   try {
-    const panelId = req.user.childPanelId;
-    if (!panelId) return errorResponse(res, 'Not authorized', 403);
+    let panelId = req.user.childPanelId; 
+    
+    // Fallback: Fetch from database if middleware didn't pass childPanelId
+    if (!panelId) {
+      const userSnap = await getRef(`users/${req.user.id}/childPanelId`).get();
+      panelId = userSnap.exists() ? userSnap.val() : null;
+    }
+
+    if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
 
     const [mainServSnap, panelPricingSnap] = await Promise.all([
       getRef('services').get(),
@@ -55,7 +62,16 @@ export const getPanelServices = async (req, res, next) => {
  */
 export const bulkUpdatePanelPrices = async (req, res, next) => {
   try {
-    const panelId = req.user.childPanelId;
+    let panelId = req.user.childPanelId; 
+    
+    // Fallback: Fetch from database if middleware didn't pass childPanelId
+    if (!panelId) {
+      const userSnap = await getRef(`users/${req.user.id}/childPanelId`).get();
+      panelId = userSnap.exists() ? userSnap.val() : null;
+    }
+
+    if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
+
     const { updates } = req.body; // [{ id: "svc1", sellingPrice: 1.50 }]
 
     if (!Array.isArray(updates)) return errorResponse(res, 'Invalid updates format', 400);
