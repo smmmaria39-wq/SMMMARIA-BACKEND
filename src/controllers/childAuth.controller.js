@@ -20,14 +20,29 @@ export const childRegister = async (req, res, next) => {
 
     const { username, email, password } = req.body;
     const panelId = panel.info.panelId;
+    const plan = panel.info.plan || 'Starter'; // Fallback just in case
 
-    // Check if email exists in this specific panel
+    // 1. Check User Limit based on the Plan
     const usersSnap = await getRef(`childPanels/${panelId}/users`).get();
+    const currentUsers = usersSnap.exists() ? Object.keys(usersSnap.val()).length : 0;
+
+    let userLimit = 0;
+    if (plan === 'Discount') userLimit = 50;
+    else if (plan === 'Starter') userLimit = 100;
+    else if (plan === 'Professional') userLimit = 1000;
+    else if (plan === 'Lifetime') userLimit = 999999; // Effectively unlimited
+
+    if (currentUsers >= userLimit) {
+      return errorResponse(res, `User limit reached for the ${plan} plan. Please ask the panel owner to upgrade.`, 403);
+    }
+
+    // 2. Check if email exists in this specific panel
     if (usersSnap.exists()) {
       const usersArr = Object.values(usersSnap.val());
       if (usersArr.some(u => u.email === email)) return errorResponse(res, 'Email already registered on this panel', 400);
     }
 
+    // 3. Create the user
     const userId = generateUUID();
     const hashedPassword = await hashPassword(password);
 
