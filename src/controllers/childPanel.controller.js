@@ -344,3 +344,67 @@ export const adminCreateChildPanel = async (req, res, next) => {
         next(error);
     }
 };
+/**
+ * @desc    Get announcements for a specific child panel
+ * @route   GET /api/v1/child-panel/announcements
+ * @access  Private
+ */
+export const getPanelAnnouncements = async (req, res, next) => {
+  try {
+    // Works for both reseller (childPanelId) and child user (panelId)
+    const panelId = req.user.childPanelId || req.user.panelId;
+    if (!panelId) return errorResponse(res, 'Panel ID not found', 400);
+
+    const snap = await getRef(`childPanels/${panelId}/announcements`).get();
+    const announcements = snap.exists() ? Object.values(snap.val()).reverse() : [];
+    
+    return successResponse(res, 'Announcements fetched', announcements);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Create an announcement (Reseller only)
+ * @route   POST /api/v1/child-panel/announcements
+ * @access  Private/Reseller
+ */
+export const createPanelAnnouncement = async (req, res, next) => {
+  try {
+    const panelId = req.user.childPanelId;
+    if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
+
+    const { title, message } = req.body;
+    if (!title || !message) return errorResponse(res, 'Title and message are required', 400);
+
+    const annId = generateUUID();
+    const annData = {
+      id: annId,
+      title,
+      message,
+      createdAt: new Date().toISOString()
+    };
+
+    await getRef(`childPanels/${panelId}/announcements/${annId}`).set(annData);
+    return successResponse(res, 'Announcement created successfully', annData, 201);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Delete an announcement (Reseller only)
+ * @route   DELETE /api/v1/child-panel/announcements/:id
+ * @access  Private/Reseller
+ */
+export const deletePanelAnnouncement = async (req, res, next) => {
+  try {
+    const panelId = req.user.childPanelId;
+    const { id } = req.params;
+
+    await getRef(`childPanels/${panelId}/announcements/${id}`).remove();
+    return successResponse(res, 'Announcement deleted successfully');
+  } catch (error) {
+    next(error);
+  }
+};
