@@ -110,3 +110,27 @@ export const createChildOrder = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * @desc    Get all orders for a specific Child Panel
+ * @route   GET /api/v1/child-panel/orders
+ * @access  Private/Reseller
+ */
+export const getPanelOrders = async (req, res, next) => {
+  try {
+    // The Reseller's JWT contains their childPanelId
+    const panelId = req.user.childPanelId;
+    if (!panelId) return errorResponse(res, 'Not authorized as reseller', 403);
+
+    const snapshot = await getRef(`childPanels/${panelId}/orders`).get();
+    let orders = [];
+    
+    if (snapshot.exists()) {
+      orders = Object.values(snapshot.val()).reverse(); // Newest first
+    }
+
+    return successResponse(res, 'Orders fetched successfully', orders);
+  } catch (error) {
+    next(error);
+  }
+};
