@@ -9,7 +9,7 @@ import morgan from 'morgan';
 import { env } from './config/env.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
-import { identifyPanel } from './middleware/panelContext.js'; // <-- ADDED THIS IMPORT
+import { identifyPanel } from './middleware/panelContext.js';
 import router from './routes/index.js';
 
 // Initialize Express App
@@ -19,19 +19,16 @@ const app = express();
 app.set('trust proxy', 1);
 
 // 1. Security Middleware
-app.use(helmet()); // Sets HTTP headers for security
+app.use(helmet());
 
-// 2. CORS Configuration (Crucial for GitHub Pages frontend)
 // 2. CORS Configuration
 const corsOptions = {
  origin: [
   'https://smmaria.netlify.app', // Your main user frontend
-  'https://adminsmmq.netlify.app', // Your admin frontend
-  'http://localhost:5500', // Added for local testing
-  'http://127.0.0.1:5500' // Added for local testing
+  'https://adminsmmq.netlify.app' // Your admin frontend
  ],
  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
- allowedHeaders: ['Content-Type', 'Authorization', 'X-Panel-Domain'], // <-- ADDED 'X-Panel-Domain' HERE
+ allowedHeaders: ['Content-Type', 'Authorization', 'X-Panel-Domain'],
  credentials: true
 };
 app.use(cors(corsOptions));
@@ -42,20 +39,20 @@ if (env.nodeEnv !== 'test') {
 }
 
 // 4. Body Parser Middleware
-app.use(express.json({ limit: '10mb' })); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Parse URL-encoded bodies
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // 5. Rate Limiting
-app.use('/api/', apiLimiter); // Apply to all API routes
+app.use('/api/', apiLimiter);
 
 // 6. Multi-Tenancy Middleware (MUST BE BEFORE ROUTES)
-app.use(identifyPanel); // <-- ADDED THIS LINE
+app.use(identifyPanel);
 
 // 7. Routes
-app.use('/api/v1', router); // All API endpoints will start with /api/v1
+app.use('/api/v1', router);
 
 // 8. Error Handling Middleware (Must be last)
-app.use(notFound); // Handle 404s
-app.use(errorHandler); // Global error handler
+app.use(notFound);
+app.use(errorHandler);
 
 export default app;
