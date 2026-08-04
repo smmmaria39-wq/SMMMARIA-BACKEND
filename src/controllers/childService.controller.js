@@ -39,8 +39,11 @@ export const getPanelServices = async (req, res, next) => {
             id: key,
             name: svc.name,
             category: svc.category,
-            costPrice: svc.costPrice, // What reseller pays
-            sellingPrice: panelPricing[key]?.sellingPrice || svc.sellingPrice, // Reseller's custom price or fallback
+            // The reseller's "Cost Price" is the Main Panel's "Selling Price"
+            // We completely hide the original supplier cost (svc.costPrice)
+            costPrice: svc.sellingPrice, 
+            // Reseller's custom price, or fallback to main panel selling price if not set
+            sellingPrice: panelPricing[key]?.sellingPrice || svc.sellingPrice, 
             min: svc.min,
             max: svc.max,
             status: svc.status
@@ -76,14 +79,39 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
 
     if (!Array.isArray(updates)) return errorResponse(res, 'Invalid updates format', 400);
 
+    // Fetch all main services to validate pricing
+    const mainServSnap = await getRef('services').get();
+    const mainServices = mainServSnap.exists() ? mainServSnap.val() : {};
+
     const updatesObj = {};
+    const invalidPrices = [];
+
     updates.forEach(upd => {
       if (upd.id && upd.sellingPrice !== undefined) {
-        updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = parseFloat(upd.sellingPrice);
+        const newPrice = parseFloat(upd.sellingPrice);
+        const mainService = mainServices[upd.id];
+
+        // Validation: Reseller selling price must be >= Main Panel selling price (their cost)
+        if (mainService && newPrice < mainService.sellingPrice) {
+          invalidPrices.push({
+            name: mainService.name,
+            attemptedPrice: newPrice,
+            minPrice: mainService.sellingPrice
+          });
+        } else {
+          updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = newPrice;
+        }
       }
     });
 
-    await getRef().update(updatesObj);
+    if (invalidPrices.length > 0) {
+      return errorResponse(res, `Pricing error: Selling price cannot be lower than your wholesale cost ($${invalidPrices[0].minPrice}) for ${invalidPrices[0].name}.`, 400);
+    }
+
+    if (Object.keys(updatesObj).length > 0) {
+      await getRef().update(updatesObj);
+    }
+    
     return successResponse(res, 'Prices updated successfully');
   } catch (error) {
     next(error);
