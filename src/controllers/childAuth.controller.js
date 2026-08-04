@@ -107,3 +107,36 @@ export const childLogin = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * @desc    Get current logged in user (Reseller or Child User)
+ * @route   GET /api/v1/child-panel/auth/me
+ * @access  Private
+ */
+export const getMe = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    if (role === 'reseller') {
+      // Fetch from main users node
+      const userSnap = await getRef(`users/${userId}`).get();
+      if (!userSnap.exists()) return errorResponse(res, 'User not found', 404);
+      const user = userSnap.val();
+      delete user.password;
+      return successResponse(res, 'User fetched', user);
+    } else if (role === 'child_user') {
+      // Fetch from child panel users node
+      const panelId = req.user.panelId;
+      const userSnap = await getRef(`childPanels/${panelId}/users/${userId}`).get();
+      if (!userSnap.exists()) return errorResponse(res, 'User not found', 404);
+      const user = userSnap.val();
+      delete user.password;
+      return successResponse(res, 'User fetched', user);
+    } else {
+      return errorResponse(res, 'Not authorized', 403);
+    }
+  } catch (error) {
+    next(error);
+  }
+};
