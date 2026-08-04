@@ -34,23 +34,18 @@ export const getPanelServices = async (req, res, next) => {
       const mainServices = mainServSnap.val();
       for (const key in mainServices) {
         const svc = mainServices[key];
-        
         if (svc.status === 'active') {
           services.push({
             id: key,
-            // Reverted to 'name' and 'category' so the frontend doesn't show "undefined"
             name: svc.name,
             category: svc.category,
-            // FIX: The reseller's cost price is the Main Panel's sellingPrice.
-            // We completely hide svc.costPrice (the supplier price).
+            // The reseller's "Cost Price" is the Main Panel's "Selling Price"
+            // We completely hide the original supplier cost (svc.costPrice)
             costPrice: svc.sellingPrice, 
             // Reseller's custom price, or fallback to main panel selling price if not set
             sellingPrice: panelPricing[key]?.sellingPrice || svc.sellingPrice, 
             min: svc.min,
             max: svc.max,
-            refill: svc.refill,
-            cancel: svc.cancel,
-            description: svc.description,
             status: svc.status
           });
         }
@@ -84,35 +79,27 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
 
     if (!Array.isArray(updates)) return errorResponse(res, 'Invalid updates format', 400);
 
-    // Fetch all main services to validate wholesale cost pricing
+    // Fetch all main services to validate pricing
     const mainServSnap = await getRef('services').get();
     const mainServices = mainServSnap.exists() ? mainServSnap.val() : {};
 
     const updatesObj = {};
     const invalidPrices = [];
-    const timestamp = new Date().toISOString();
 
     updates.forEach(upd => {
       if (upd.id && upd.sellingPrice !== undefined) {
         const newPrice = parseFloat(upd.sellingPrice);
         const mainService = mainServices[upd.id];
 
-        if (mainService) {
-          // FIX: Validation must check against the Main Panel's sellingPrice
-          if (newPrice < mainService.sellingPrice) {
-            invalidPrices.push({
-              name: mainService.name,
-              attemptedPrice: newPrice,
-              minPrice: mainService.sellingPrice
-            });
-          } else {
-            // Save ONLY to the child panel's isolated pricing node
-            updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = newPrice;
-            // Calculate and store profit automatically based on main panel selling price
-            updatesObj[`childPanels/${panelId}/pricing/${upd.id}/profit`] = newPrice - mainService.sellingPrice;
-            // Store timestamp as required by documentation
-            updatesObj[`childPanels/${panelId}/pricing/${upd.id}/updatedAt`] = timestamp;
-          }
+        // Validation: Reseller selling price must be >= Main Panel selling price (their cost)
+        if (mainService && newPrice < mainService.sellingPrice) {
+          invalidPrices.push({
+            name: mainService.name,
+            attemptedPrice: newPrice,
+            minPrice: mainService.sellingPrice
+          });
+        } else {
+          updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = newPrice;
         }
       }
     });
