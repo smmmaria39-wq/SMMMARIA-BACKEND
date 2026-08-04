@@ -77,10 +77,21 @@ export const childRegister = async (req, res, next) => {
 export const childLogin = async (req, res, next) => {
   try {
     const panel = req.panelContext;
-    const { email, password } = req.body;
+    const { email, password } = req.body; // 'email' field actually accepts email, username, or accountId
 
     // 1. First, check if the person logging in is the RESELLER OWNER
-    const ownerSnap = await getRef('users').orderByChild('email').equalTo(email).get();
+    // Check by Email
+    let ownerSnap = await getRef('users').orderByChild('email').equalTo(email).get();
+    
+    // If not found by email, check by Username
+    if (!ownerSnap.exists()) {
+      ownerSnap = await getRef('users').orderByChild('username').equalTo(email).get();
+    }
+    
+    // If not found by username, check by Account ID
+    if (!ownerSnap.exists()) {
+      ownerSnap = await getRef('users').orderByChild('accountId').equalTo(email).get();
+    }
     
     if (ownerSnap.exists()) {
       const owner = Object.values(ownerSnap.val())[0];
@@ -94,6 +105,9 @@ export const childLogin = async (req, res, next) => {
         // Generate token with childPanelId so the backend knows which panel they own
         const token = generateToken({ id: owner.id, role: 'reseller', childPanelId: owner.childPanelId });
         return successResponse(res, 'Login successful', { token, user: owner });
+      } else {
+        // If they are a standard user, they shouldn't be logging in here
+        return errorResponse(res, 'You do not own a Child Panel. Please purchase one first.', 403);
       }
     }
 
@@ -105,7 +119,8 @@ export const childLogin = async (req, res, next) => {
     if (!usersSnap.exists()) return errorResponse(res, 'Invalid credentials', 401);
 
     const usersArr = Object.values(usersSnap.val());
-    const user = usersArr.find(u => u.email === email);
+    // Child users can login with email or username
+    const user = usersArr.find(u => u.email === email || u.username === email);
 
     if (!user) return errorResponse(res, 'Invalid credentials', 401);
     if (user.status !== 'active') return errorResponse(res, 'Account suspended', 403);
