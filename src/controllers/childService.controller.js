@@ -98,7 +98,9 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
             attemptedPrice: newPrice,
             minPrice: mainService.sellingPrice
           });
-        } else {
+        } else if (mainService) {
+          // SAFETY CHECK: Only save if the service exists. 
+          // This writes ONLY to the child panel's pricing node. The main services node is untouched.
           updatesObj[`childPanels/${panelId}/pricing/${upd.id}/sellingPrice`] = newPrice;
         }
       }
@@ -116,4 +118,4 @@ export const bulkUpdatePanelPrices = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-};
+}; 
