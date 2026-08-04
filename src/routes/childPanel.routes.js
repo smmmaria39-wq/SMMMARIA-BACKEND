@@ -3,7 +3,8 @@
 // ===============================================
 
 import express from 'express';
-import { protect, admin } from '../middleware/auth.js';
+import { protect } from '../middleware/auth.js';
+import { admin } from '../middleware/admin.js'; // <-- FIXED IMPORT HERE
 import { identifyPanel } from '../middleware/panelContext.js';
 
 // Controllers
@@ -19,7 +20,7 @@ import {
 } from '../controllers/childPanel.controller.js';
 
 import { childLogin, childRegister } from '../controllers/childAuth.controller.js';
-import { getPanelUsers, updatePanelUserStatus } from '../controllers/childUser.controller.js';
+import { getPanelUsers, updatePanelUserStatus, fundChildUser } from '../controllers/childUser.controller.js';
 import { getPanelServices, bulkUpdatePanelPrices } from '../controllers/childService.controller.js';
 import { getPanelTransactions, requestPanelDeposit } from '../controllers/childWallet.controller.js';
 import { createChildOrder, getPanelOrders } from '../controllers/childOrder.controller.js';
@@ -42,6 +43,7 @@ router.put('/branding', protect, updatePanelBranding);
 
 router.get('/users', protect, getPanelUsers);
 router.put('/users/:id/status', protect, updatePanelUserStatus);
+router.post('/users/:id/fund', protect, fundChildUser);
 
 router.get('/services', protect, getPanelServices);
 router.put('/services/bulk-update', protect, bulkUpdatePanelPrices);
