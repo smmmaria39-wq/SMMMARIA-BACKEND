@@ -27,7 +27,9 @@ export const createChildOrder = async (req, res, next) => {
     // 2. Fetch Panel Custom Price
     const pricingSnap = await getRef(`childPanels/${panelId}/pricing/${serviceId}`).get();
     const resellerPrice = pricingSnap.exists() ? pricingSnap.val().sellingPrice : service.sellingPrice;
-    const mainCostPrice = service.costPrice; // What reseller pays SMMMARIA
+    
+    // UPDATE APPLIED: What reseller pays SMMMARIA is the main panel's sellingPrice
+    const mainCostPrice = service.sellingPrice; // What reseller pays SMMMARIA
 
     // 3. Calculate Charges
     const qty = parseInt(quantity);
