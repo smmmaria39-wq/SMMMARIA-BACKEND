@@ -12,7 +12,8 @@ import serviceRoutes from './service.routes.js';
 import orderRoutes from './order.routes.js';
 import ticketRoutes from './ticket.routes.js';
 import notificationRoutes from './notification.routes.js';
-import announcementRoutes from './announcement.routes.js'; // <-- ADDED
+import announcementRoutes from './announcement.routes.js';
+import childPanelRoutes from './childPanel.routes.js'; // <-- ADD THIS IMPORT
 import adminRoutes from './admin.routes.js';
 
 const router = Router();
@@ -32,7 +33,8 @@ router.use('/services', serviceRoutes);
 router.use('/orders', orderRoutes);
 router.use('/tickets', ticketRoutes);
 router.use('/notifications', notificationRoutes);
-router.use('/announcements', announcementRoutes); // <-- ADDED
+router.use('/announcements', announcementRoutes);
+router.use('/child-panel', childPanelRoutes); // <-- ADD THIS MOUNT
 router.use('/admin', adminRoutes);
 
 export default router;
