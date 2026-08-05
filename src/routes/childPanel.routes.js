@@ -16,6 +16,10 @@ import {
     getChildPanelDetails,
     updateChildPanelStatus,
     fundChildPanelWallet,
+    deductChildPanelWallet,         // ADDED
+    setChildPanelBalance,           // ADDED
+    bulkFundChildPanelWallets,      // ADDED
+    getChildPanelTransactions,      // ADDED
     adminCreateChildPanel,
     getPanelAnnouncements, 
     createPanelAnnouncement, 
@@ -64,10 +68,17 @@ router.post('/announcements', protect, createPanelAnnouncement);
 router.delete('/announcements/:id', protect, deletePanelAnnouncement);
 
 // --- Super Admin Routes ---
+// NOTE: Static routes (/all, /admin-create, /bulk-fund) MUST be above /:id routes
 router.get('/all', protect, admin, getAllPanels);
 router.post('/admin-create', protect, admin, adminCreateChildPanel);
+router.post('/bulk-fund', protect, admin, bulkFundChildPanelWallets);
+
+// Dynamic Panel ID Routes
 router.get('/:id', protect, admin, getChildPanelDetails);
+router.get('/:id/transactions', protect, admin, getChildPanelTransactions);
 router.put('/:id/status', protect, admin, updateChildPanelStatus);
+router.put('/:id/balance', protect, admin, setChildPanelBalance);
 router.post('/:id/fund', protect, admin, fundChildPanelWallet);
+router.post('/:id/deduct', protect, admin, deductChildPanelWallet);
 
 export default router;
