@@ -186,7 +186,6 @@ export const updatePanelBranding = async (req, res, next) => {
 // ===============================================
 // SUPER ADMIN FUNCTIONS
 // ===============================================
-
 /**
  * @desc    Admin: Get all child panels
  * @route   GET /api/v1/child-panel/all
@@ -199,20 +198,28 @@ export const getAllPanels = async (req, res, next) => {
         
         if (snapshot.exists()) {
             const panelsData = snapshot.val();
+            
             for (const key in panelsData) {
                 if (Object.hasOwnProperty.call(panelsData, key)) {
                     const panel = panelsData[key];
-                    // Fetch owner's username and balance for the table display
-                    const ownerSnap = await getRef(`users/${panel.info.ownerId}`).get();
+                    const ownerId = panel.info?.ownerId;
+                    
+                    // Fetch owner's wallet and profile data for the admin table
+                    const ownerSnap = ownerId ? await getRef(`users/${ownerId}`).get() : { exists: () => false };
                     const owner = ownerSnap.exists() ? ownerSnap.val() : {};
                     
                     panels.push({
+                        id: key, // CRITICAL FIX: Attach the Firebase key as the panel ID
                         info: {
                             ...panel.info,
+                            // Flatten owner details into info for seamless frontend mapping
                             ownerUsername: owner.username || 'Unknown',
-                            balance: owner.balance || 0
+                            ownerEmail: owner.email || '',
+                            balance: owner.balance || 0,
+                            totalDeposited: owner.totalDeposited || 0,
+                            totalSpent: owner.spent || 0
                         },
-                        statistics: panel.statistics || { totalUsers: 0, totalOrders: 0 }
+                        statistics: panel.statistics || { totalUsers: 0, totalOrders: 0, totalRevenue: 0 }
                     });
                 }
             }
