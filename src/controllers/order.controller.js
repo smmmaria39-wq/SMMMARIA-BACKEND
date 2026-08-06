@@ -105,7 +105,6 @@ export const createOrder = async (req, res, next) => {
         // ==========================================
         // AFFILIATE COMMISSION LOGIC
         // ==========================================
-        // Fetch the user object to check if they were referred by someone
         const userSnap = await getRef(`users/${userId}`).get();
         if (userSnap.exists()) {
             const userObj = userSnap.val();
@@ -114,13 +113,11 @@ export const createOrder = async (req, res, next) => {
                 const commission = parseFloat((charge * commissionRate).toFixed(2));
                 
                 if (commission > 0) {
-                    // 1. Add commission to the referrer's main wallet balance
                     const referrerBalanceRef = getRef(`users/${userObj.referredBy}/balance`);
                     await referrerBalanceRef.transaction((currentBalance) => {
                         return (currentBalance || 0) + commission;
                     });
                     
-                    // 2. Add commission to the referrer's total referralCommission tracker
                     const referrerCommissionRef = getRef(`users/${userObj.referredBy}/referralCommission`);
                     await referrerCommissionRef.transaction((currentComm) => {
                         return (currentComm || 0) + commission;
@@ -141,30 +138,51 @@ export const createOrder = async (req, res, next) => {
 };
 
 /**
- * @desc    Get orders (User gets their own, Admin gets all)
+ * @desc    Get orders (User gets their own securely, Admin gets all)
  * @route   GET /api/v1/orders
  * @access  Private
  */
 export const getOrders = async (req, res, next) => {
     try {
-        const snapshot = await getRef('orders').get();
         let orders = [];
-        
-        if (snapshot.exists()) {
-            const ordersData = snapshot.val();
-            for (const key in ordersData) {
-                if (Object.hasOwnProperty.call(ordersData, key)) {
-                    // Attach the Firebase key as 'id'
-                    orders.push({ id: key, ...ordersData[key] });
+
+        // SECURITY FIX: Check user role to determine query type
+        if (req.user.role === 'admin' || req.user.role === 'super_admin') {
+            
+            // ADMIN QUERY: Fetch ALL orders for the admin dashboard
+            const snapshot = await getRef('orders').get();
+            
+            if (snapshot.exists()) {
+                const ordersData = snapshot.val();
+                for (const key in ordersData) {
+                    if (Object.hasOwnProperty.call(ordersData, key)) {
+                        orders.push({ id: key, ...ordersData[key] });
+                    }
                 }
             }
-            orders.reverse(); // Newest first
+            
+        } else {
+            
+            // USER QUERY: STRICTLY query Firebase for ONLY this user's orders.
+            // This prevents downloading the entire database into memory.
+            const userId = req.user.id;
+            const snapshot = await getRef('orders')
+                .orderByChild('userId')
+                .equalTo(userId)
+                .get();
+
+            if (snapshot.exists()) {
+                const ordersData = snapshot.val();
+                for (const key in ordersData) {
+                    if (Object.hasOwnProperty.call(ordersData, key)) {
+                        orders.push({ id: key, ...ordersData[key] });
+                    }
+                }
+            }
         }
-        
-        // If it's a standard user, only return their orders
-        if (req.user.role === 'user') {
-            orders = orders.filter(o => o.userId === req.user.id);
-        }
+
+        // Sort orders by newest first before sending to frontend
+        orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         
         return successResponse(res, 'Orders fetched successfully', orders);
     } catch (error) {
