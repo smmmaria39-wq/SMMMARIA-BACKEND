@@ -1,3 +1,4 @@
+// src/controllers/account.controller.js
 import accountService from '../services/account.service.js';
 
 class AccountController {
@@ -30,8 +31,8 @@ class AccountController {
 
   async purchaseAccount(req, res, next) {
     try {
-      // ONLY pass accountId and authenticated userId. Ignore any client-sent price.
-      const result = await accountService.purchaseAccount(req.params.id, req.user.uid);
+      // FIX: Changed req.user.uid to req.user.id to match your auth middleware
+      const result = await accountService.purchaseAccount(req.params.id, req.user.id);
       res.json({ success: true, message: 'Purchase successful', data: result });
     } catch (error) {
       next(error);
@@ -40,7 +41,8 @@ class AccountController {
 
   async getMyPurchases(req, res, next) {
     try {
-      const purchases = await accountService.getUserPurchases(req.user.uid);
+      // FIX: Changed req.user.uid to req.user.id
+      const purchases = await accountService.getUserPurchases(req.user.id);
       res.json({ success: true, data: purchases });
     } catch (error) {
       next(error);
@@ -49,8 +51,8 @@ class AccountController {
 
   async getMyPurchaseDetails(req, res, next) {
     try {
-      // Returns credentials safely because service checks userId ownership
-      const purchase = await accountService.getUserPurchaseDetails(req.params.id, req.user.uid);
+      // FIX: Changed req.user.uid to req.user.id
+      const purchase = await accountService.getUserPurchaseDetails(req.params.id, req.user.id);
       res.json({ success: true, data: purchase });
     } catch (error) {
       next(error);
