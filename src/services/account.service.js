@@ -52,7 +52,9 @@ class AccountService {
       const allAccounts = snapshot.val();
       for (const [id, acc] of Object.entries(allAccounts)) {
         if (acc.status !== 'available') continue;
-        if (filters.platform && acc.platform !== filters.platform) continue;
+        
+        // FIX: Case-insensitive comparison for platform
+        if (filters.platform && String(acc.platform).toLowerCase() !== String(filters.platform).toLowerCase()) continue;
         if (filters.categoryId && acc.categoryId !== filters.categoryId) continue;
         
         accounts.push(sanitizeAccount({ id, ...acc }));
@@ -83,7 +85,6 @@ class AccountService {
 
     // Phase 1: Atomically reserve the account
     const reserveResult = await accountRef.transaction((currentAccount) => {
-      // CRITICAL FIX: If null, return null to let Firebase fetch the server value.
       if (currentAccount === null) {
         return currentAccount; 
       }
@@ -108,9 +109,6 @@ class AccountService {
 
     const accountData = reserveResult.snapshot.val();
     
-    // =========================================================
-    // ENFORCE DYNAMIC PRICING: $10 per 1,000 followers
-    // =========================================================
     const followersCount = parseInt(accountData.followers) || 0;
     const actualPrice = (followersCount / 1000) * 10;
 
@@ -246,7 +244,7 @@ class AccountService {
       purchaseData.accountDetails = accountDoc.val();
     }
     return purchaseData;
-  }
+  SD
 }
 
 export default new AccountService();
