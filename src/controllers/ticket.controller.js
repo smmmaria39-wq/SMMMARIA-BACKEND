@@ -162,3 +162,226 @@ export const closeTicket = async (req, res, next) => {
   next(error);
  }
 };
+// ===============================================
+// ADMIN TICKET CONTROLLERS
+// ===============================================
+
+/**
+ * @desc    Admin: Get all tickets with filtering & pagination
+ * @route   GET /api/v1/tickets/admin
+ * @access  Private/Admin
+ */
+export const getAdminTickets = async (req, res, next) => {
+ try {
+  const { status, priority, subject, search, page = 1, limit = 20 } = req.query;
+  const snapshot = await getRef('tickets').get();
+  let tickets = snapshot.exists() ? Object.values(snapshot.val()) : [];
+
+  // Apply Filters
+  if (status) tickets = tickets.filter(t => t.status === status);
+  if (priority) tickets = tickets.filter(t => t.priority === priority);
+  if (subject) tickets = tickets.filter(t => t.subject === subject);
+  
+  if (search) {
+   const lowerSearch = search.toLowerCase();
+   tickets = tickets.filter(t => 
+    (t.id && t.id.includes(lowerSearch)) ||
+    (t.username && t.username.toLowerCase().includes(lowerSearch)) ||
+    (t.userId && t.userId.includes(lowerSearch)) ||
+    (t.orderId && t.orderId.includes(lowerSearch)) ||
+    (t.subject && t.subject.toLowerCase().includes(lowerSearch))
+   );
+  }
+
+  // Sort by updatedAt descending
+  tickets.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+  // Pagination Logic
+  const pageNum = parseInt(page, 10) || 1;
+  const limitNum = Math.min(parseInt(limit, 10) || 20, 100); // Max 100 limit
+  const startIndex = (pageNum - 1) * limitNum;
+  const endIndex = pageNum * limitNum;
+  const paginatedTickets = tickets.slice(startIndex, endIndex);
+
+  return successResponse(res, 'Tickets fetched successfully', {
+   tickets: paginatedTickets,
+   pagination: {
+    page: pageNum,
+    limit: limitNum,
+    total: tickets.length,
+    totalPages: Math.ceil(tickets.length / limitNum)
+   }
+  });
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Get ticket statistics
+ * @route   GET /api/v1/tickets/admin/stats
+ * @access  Private/Admin
+ */
+export const getAdminTicketStats = async (req, res, next) => {
+ try {
+  const snapshot = await getRef('tickets').get();
+  const tickets = snapshot.exists() ? Object.values(snapshot.val()) : [];
+  
+  const stats = {
+   total: tickets.length,
+   open: tickets.filter(t => t.status === 'open').length,
+   awaitingAdminReply: tickets.filter(t => t.status === 'awaiting_admin_reply').length,
+   awaitingUserReply: tickets.filter(t => t.status === 'awaiting_user_reply').length,
+   closed: tickets.filter(t => t.status === 'closed').length,
+   highPriority: tickets.filter(t => t.priority === 'high').length,
+   mediumPriority: tickets.filter(t => t.priority === 'medium').length,
+   lowPriority: tickets.filter(t => t.priority === 'low').length,
+  };
+
+  return successResponse(res, 'Ticket stats fetched successfully', stats);
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Get single ticket with messages
+ * @route   GET /api/v1/tickets/admin/:id
+ * @access  Private/Admin
+ */
+export const getAdminTicketById = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  const ticketSnap = await getRef(`tickets/${id}`).get();
+  
+  if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
+  
+  const ticket = ticketSnap.val();
+  // No ownership check here, admins can view any ticket
+  
+  const msgSnap = await getRef(`ticketMessages/${id}`).get();
+  const messages = msgSnap.exists() ? Object.values(msgSnap.val()) : [];
+  
+  return successResponse(res, 'Ticket fetched successfully', { ticket, messages });
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Reply to a ticket
+ * @route   POST /api/v1/tickets/admin/:id/reply
+ * @access  Private/Admin
+ */
+export const replyAsAdmin = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  const { message } = req.body;
+  
+  const ticketRef = getRef(`tickets/${id}`);
+  const ticketSnap = await ticketRef.get();
+  
+  if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
+  
+  const messageId = generateUUID();
+  const messageData = {
+   id: messageId,
+   ticketId: id,
+   userId: req.user.id,
+   message,
+   isAdmin: true, // Hardcoded true for admin routes
+   createdAt: new Date().toISOString()
+  };
+  
+  await getRef(`ticketMessages/${id}/${messageId}`).set(messageData);
+  
+  // Update ticket status and timestamp
+  const updates = { 
+   updatedAt: new Date().toISOString(),
+   status: 'awaiting_user_reply' 
+  };
+  
+  await ticketRef.update(updates);
+  
+  return successResponse(res, 'Reply added successfully', messageData);
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Update ticket status
+ * @route   PATCH /api/v1/tickets/admin/:id/status
+ * @access  Private/Admin
+ */
+export const updateTicketStatus = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  const { status } = req.body;
+  
+  const ticketRef = getRef(`tickets/${id}`);
+  const ticketSnap = await ticketRef.get();
+  
+  if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
+  
+  await ticketRef.update({ 
+   status, 
+   updatedAt: new Date().toISOString() 
+  });
+  
+  return successResponse(res, 'Ticket status updated successfully');
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Update ticket priority
+ * @route   PATCH /api/v1/tickets/admin/:id/priority
+ * @access  Private/Admin
+ */
+export const updateTicketPriority = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  const { priority } = req.body;
+  
+  const ticketRef = getRef(`tickets/${id}`);
+  const ticketSnap = await ticketRef.get();
+  
+  if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
+  
+  await ticketRef.update({ 
+   priority, 
+   updatedAt: new Date().toISOString() 
+  });
+  
+  return successResponse(res, 'Ticket priority updated successfully');
+ } catch (error) {
+  next(error);
+ }
+};
+
+/**
+ * @desc    Admin: Reopen a closed ticket
+ * @route   PATCH /api/v1/tickets/admin/:id/reopen
+ * @access  Private/Admin
+ */
+export const reopenTicket = async (req, res, next) => {
+ try {
+  const { id } = req.params;
+  
+  const ticketRef = getRef(`tickets/${id}`);
+  const ticketSnap = await ticketRef.get();
+  
+  if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
+  
+  await ticketRef.update({ 
+   status: 'open', 
+   updatedAt: new Date().toISOString() 
+  });
+  
+  return successResponse(res, 'Ticket reopened successfully');
+ } catch (error) {
+  next(error);
+ }
+};
