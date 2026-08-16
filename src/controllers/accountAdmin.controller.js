@@ -131,6 +131,26 @@ class AccountAdminController {
     }
   }
 
+  // ===============================================
+  // NEW: Fetch all categories for the admin panel
+  // ===============================================
+  async getCategories(req, res, next) {
+    try {
+      const snapshot = await getRef('accountCategories').get();
+      let categories = [];
+      
+      if (snapshot.exists()) {
+        const allCategories = snapshot.val();
+        for (const [id, cat] of Object.entries(allCategories)) {
+          categories.push({ id, ...cat });
+        }
+      }
+      res.json({ success: true, data: categories });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // Create a new category
   async createCategory(req, res, next) {
     try {
