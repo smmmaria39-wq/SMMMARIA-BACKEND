@@ -79,8 +79,12 @@ class AccountService {
     const accountRef = getRef(`accountInventory/${accountId}`);
     const userRef = getRef(`users/${userId}`);
     
+    console.log(`[Purchase Debug] Starting reservation for account: ${accountId}, user: ${userId}`);
+
     // Phase 1: Atomically reserve the account
     const reserveResult = await accountRef.transaction((currentAccount) => {
+      console.log('[Purchase Debug] Inside transaction. Current value:', currentAccount);
+      
       // If account doesn't exist
       if (currentAccount === null) {
         console.log('[Purchase Debug] Transaction aborted: Account does not exist');
@@ -100,6 +104,11 @@ class AccountService {
       updatedAccount.reservedBy = userId;
       
       return updatedAccount; 
+    });
+
+    console.log('[Purchase Debug] Transaction result:', {
+      committed: reserveResult.committed,
+      snapshotValue: reserveResult.snapshot.val()
     });
 
     // If reservation failed because it wasn't available
