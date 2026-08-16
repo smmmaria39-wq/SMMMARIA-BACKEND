@@ -112,7 +112,9 @@ export const getTickets = async (req, res, next) => {
   const snapshot = await getRef('tickets').get();
   let tickets = snapshot.exists() ? Object.values(snapshot.val()).reverse() : [];
   
-  if (req.user.role === 'user') {
+  // SECURE FIX: Only show all tickets to admins. Everyone else only sees their own.
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+  if (!isAdmin) {
    tickets = tickets.filter(t => t.userId === req.user.id);
   }
   
@@ -120,7 +122,7 @@ export const getTickets = async (req, res, next) => {
  } catch (error) {
   next(error);
  }
-};
+}; 
 
 /**
  * @desc    Get single ticket with messages
@@ -135,7 +137,10 @@ export const getTicketById = async (req, res, next) => {
   if (!ticketSnap.exists()) return errorResponse(res, 'Ticket not found', 404);
   
   const ticket = ticketSnap.val();
-  if (req.user.role === 'user' && ticket.userId !== req.user.id) {
+  
+  // SECURE FIX: Only allow admins to view any ticket. Everyone else gets blocked.
+  const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+  if (!isAdmin && ticket.userId !== req.user.id) {
    return errorResponse(res, 'Not authorized', 403);
   }
   
