@@ -84,18 +84,15 @@ class AccountService {
     // Phase 1: Atomically reserve the account
     const reserveResult = await accountRef.transaction((currentAccount) => {
       // CRITICAL FIX: If null, return null to let Firebase fetch the server value.
-      // Returning undefined aborts the transaction immediately!
       if (currentAccount === null) {
         return currentAccount; 
       }
       
-      // Now we have the actual server data
       if (currentAccount.status !== 'available') {
         console.log(`[Purchase Debug] Transaction aborted: Status is ${currentAccount.status}`);
-        return; // Abort
+        return; 
       }
       
-      // Reserve it
       const updatedAccount = { ...currentAccount };
       updatedAccount.status = 'reserved';
       updatedAccount.reservedAt = Date.now();
@@ -104,7 +101,6 @@ class AccountService {
       return updatedAccount; 
     });
 
-    // If reservation failed because it wasn't available or doesn't exist
     if (!reserveResult.committed) {
       console.error(`[Purchase Error] Failed to reserve account ${accountId}. It may be sold or reserved.`);
       throw new Error('Account is no longer available.');
@@ -121,7 +117,6 @@ class AccountService {
     try {
       // Phase 2: Atomically verify and debit wallet
       const walletResult = await userRef.transaction((currentUser) => {
-        // CRITICAL FIX: Same pattern. Return null to fetch server value.
         if (currentUser === null) {
           return currentUser; 
         }
@@ -130,7 +125,7 @@ class AccountService {
         
         if (currentBalance < actualPrice) {
           console.log(`[Purchase Debug] Wallet transaction aborted: Insufficient funds (${currentBalance} < ${actualPrice})`);
-          return; // Abort
+          return; 
         }
         
         currentUser.balance = currentBalance - actualPrice;
@@ -161,7 +156,7 @@ class AccountService {
         userId: userId,
         type: 'debit',
         amount: actualPrice,
-        note: `Purchase of ${accountData.platform} account (${accountData.username})`,
+        note: `Purchase of ${accountData.platform || 'Unknown'} account (${accountData.username || 'Unknown'})`,
         balanceAfter: newBalance,
         createdAt: Date.now()
       };
@@ -170,9 +165,9 @@ class AccountService {
         purchaseId,
         userId,
         accountId,
-        categoryId: accountData.categoryId,
-        platform: accountData.platform,
-        username: accountData.username,
+        categoryId: accountData.categoryId || '',
+        platform: accountData.platform || 'Unknown',
+        username: accountData.username || 'Unknown',
         amount: actualPrice,
         currency: accountData.currency || 'USD',
         walletTransactionId: txId,
@@ -186,9 +181,9 @@ class AccountService {
         userId,
         purchaseId,
         accountId,
-        platform: accountData.platform,
-        username: accountData.username,
-        accountType: accountData.accountType,
+        platform: accountData.platform || 'Unknown',
+        username: accountData.username || 'Unknown',
+        accountType: accountData.accountType || 'N/A', 
         price: actualPrice,
         currency: accountData.currency || 'USD',
         status: 'paid',
@@ -212,7 +207,6 @@ class AccountService {
       return { purchaseId, invoiceId };
 
     } catch (error) {
-      // Revert reservation if wallet fails or update fails
       console.error(`[Purchase Error] Reverting reservation for account ${accountId}:`, error.message);
       await accountRef.update({ 
         status: 'available', 
