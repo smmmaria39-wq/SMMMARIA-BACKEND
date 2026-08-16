@@ -14,14 +14,18 @@ import ticketRoutes from './ticket.routes.js';
 import notificationRoutes from './notification.routes.js';
 import announcementRoutes from './announcement.routes.js';
 import childPanelRoutes from './childPanel.routes.js'; 
-import refillRoutes from './refill.routes.js'; // <-- ADDED MISSING IMPORT
+import refillRoutes from './refill.routes.js'; 
 import adminRoutes from './admin.routes.js';
+
+// ---> NEW IMPORTS FOR BUY ACCOUNT MARKETPLACE <---
+import accountRoutes from './account.routes.js';
+import accountAdminRoutes from './accountAdmin.routes.js';
 
 const router = Router();
 
 // Health Check Route
 router.get('/health', (req, res) => {
- res.status(200).json({ success: true, message: 'SMMMARIA API is running smoothly!' });
+  res.status(200).json({ success: true, message: 'SMMMARIA API is running smoothly!' });
 });
 
 // Mount Routers
@@ -36,7 +40,14 @@ router.use('/tickets', ticketRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/announcements', announcementRoutes);
 router.use('/child-panel', childPanelRoutes); 
-router.use('/refills', refillRoutes); // <-- ADDED MISSING MOUNT POINT
+router.use('/refills', refillRoutes); 
 router.use('/admin', adminRoutes);
 
-export default router; 
+// ---> NEW MOUNT POINTS FOR BUY ACCOUNT MARKETPLACE <---
+// Customer-facing endpoints: /api/v1/accounts
+router.use('/accounts', accountRoutes);
+
+// Admin-facing endpoints: /api/v1/admin/accounts
+router.use('/admin/accounts', accountAdminRoutes);
+
+export default router;  
