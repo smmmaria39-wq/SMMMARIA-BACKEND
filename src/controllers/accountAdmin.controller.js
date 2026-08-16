@@ -1,5 +1,6 @@
-const accountService = require('../services/account.service');
-const admin = require('firebase-admin');
+import admin from 'firebase-admin';
+import accountService from '../services/account.service.js'; // Kept in case needed for future logic
+
 const db = admin.firestore();
 
 class AccountAdminController {
@@ -118,4 +119,4 @@ class AccountAdminController {
   }
 }
 
-module.exports = new AccountAdminController();
+export default new AccountAdminController();
