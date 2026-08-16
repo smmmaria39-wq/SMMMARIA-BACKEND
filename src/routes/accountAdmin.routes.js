@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import accountAdminController from '../controllers/accountAdmin.controller.js';
 import { createAccountSchema, updateAccountSchema, createCategorySchema } from '../validators/account.validation.js';
-import authMiddleware from '../middleware/auth.js';
-import adminMiddleware from '../middleware/admin.js';
+import { protect } from '../middleware/auth.js'; // <-- FIX HERE
+import { admin } from '../middleware/admin.js'; // <-- VERIFY THIS NAME IN YOUR admin.js
 import validate from '../middleware/validation.js';
 
 const router = Router();
 
-router.use(authMiddleware, adminMiddleware);
+// Use protect and admin middleware
+router.use(protect, admin);
 
 router.get('/', accountAdminController.getStats);
 router.post('/', validate(createAccountSchema), accountAdminController.createAccount);
