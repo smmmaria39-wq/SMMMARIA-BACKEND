@@ -83,21 +83,19 @@ class AccountService {
 
     // Phase 1: Atomically reserve the account
     const reserveResult = await accountRef.transaction((currentAccount) => {
-      console.log('[Purchase Debug] Inside transaction. Current value:', currentAccount);
-      
-      // If account doesn't exist
+      // CRITICAL FIX: If null, return null to let Firebase fetch the server value.
+      // Returning undefined aborts the transaction immediately!
       if (currentAccount === null) {
-        console.log('[Purchase Debug] Transaction aborted: Account does not exist');
-        return; 
+        return currentAccount; 
       }
       
-      // If account is not available
+      // Now we have the actual server data
       if (currentAccount.status !== 'available') {
         console.log(`[Purchase Debug] Transaction aborted: Status is ${currentAccount.status}`);
-        return; 
+        return; // Abort
       }
       
-      // Create a new object to return (best practice for Firebase transactions)
+      // Reserve it
       const updatedAccount = { ...currentAccount };
       updatedAccount.status = 'reserved';
       updatedAccount.reservedAt = Date.now();
@@ -106,12 +104,7 @@ class AccountService {
       return updatedAccount; 
     });
 
-    console.log('[Purchase Debug] Transaction result:', {
-      committed: reserveResult.committed,
-      snapshotValue: reserveResult.snapshot.val()
-    });
-
-    // If reservation failed because it wasn't available
+    // If reservation failed because it wasn't available or doesn't exist
     if (!reserveResult.committed) {
       console.error(`[Purchase Error] Failed to reserve account ${accountId}. It may be sold or reserved.`);
       throw new Error('Account is no longer available.');
@@ -128,15 +121,16 @@ class AccountService {
     try {
       // Phase 2: Atomically verify and debit wallet
       const walletResult = await userRef.transaction((currentUser) => {
+        // CRITICAL FIX: Same pattern. Return null to fetch server value.
         if (currentUser === null) {
-          console.log('[Purchase Debug] Wallet transaction aborted: User does not exist');
-          return; 
+          return currentUser; 
         }
+        
         const currentBalance = parseFloat(currentUser.balance) || 0;
         
         if (currentBalance < actualPrice) {
           console.log(`[Purchase Debug] Wallet transaction aborted: Insufficient funds (${currentBalance} < ${actualPrice})`);
-          return; 
+          return; // Abort
         }
         
         currentUser.balance = currentBalance - actualPrice;
