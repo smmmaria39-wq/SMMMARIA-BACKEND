@@ -1,18 +1,18 @@
 import { Router } from 'express';
 import accountController from '../controllers/account.controller.js';
 import { purchaseAccountSchema } from '../validators/account.validation.js';
-import authMiddleware from '../middleware/auth.js'; 
-import validate from '../middleware/validation.js'; // Your existing validation middleware
+import { protect } from '../middleware/auth.js'; // <-- FIX HERE
+import validate from '../middleware/validation.js'; 
 
 const router = Router();
 
-router.use(authMiddleware);
+// Use protect middleware
+router.use(protect);
 
 router.get('/categories', accountController.getCategories);
 router.get('/', accountController.getAccounts);
 router.get('/:id', accountController.getAccountDetails);
 
-// Apply Zod validate middleware
 router.post('/:id/purchase', validate(purchaseAccountSchema), accountController.purchaseAccount);
 
 router.get('/purchases', accountController.getMyPurchases);
