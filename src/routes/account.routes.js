@@ -1,13 +1,14 @@
-const express = require('express');
-const router = express.Router();
-const accountController = require('../controllers/account.controller');
-const { purchaseAccountRules } = require('../validators/account.validation');
+import { Router } from 'express';
+import accountController from '../controllers/account.controller.js';
+import { purchaseAccountRules } from '../validators/account.validation.js';
+import authMiddleware from '../middleware/auth.js'; // Adjusted to ES Modules
+
+const router = Router();
 
 // Protect all routes
-const authMiddleware = require('../middleware/auth'); 
-
 router.use(authMiddleware);
 
+// Categories & Inventory
 router.get('/categories', accountController.getCategories);
 router.get('/', accountController.getAccounts);
 router.get('/:id', accountController.getAccountDetails);
@@ -20,4 +21,4 @@ router.get('/purchases', accountController.getMyPurchases);
 router.get('/purchases/:id', accountController.getMyPurchaseDetails);
 router.get('/purchases/:id/invoice', accountController.getMyPurchaseDetails); // Re-use details for invoice data
 
-module.exports = router;
+export default router;
