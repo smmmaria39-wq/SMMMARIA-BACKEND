@@ -1,7 +1,5 @@
+// src/services/account.service.js
 import { getRef } from '../database/firebase.js';
-
-// IMPORTANT: Assume notificationService is imported from existing system
-// import notificationService from './notification.service.js';
 
 // Helper to remove sensitive credentials from public responses
 const sanitizeAccount = (account) => {
@@ -17,8 +15,6 @@ class AccountService {
     
     if (snapshot.exists()) {
       const allCategories = snapshot.val();
-      
-      // Fetch inventory to calculate live stock
       const invSnapshot = await getRef('accountInventory').get();
       const allInventory = invSnapshot.exists() ? invSnapshot.val() : {};
 
@@ -72,42 +68,70 @@ class AccountService {
   }
 
   async purchaseAccount(accountId, userId) {
+    // 1. Validate inputs before doing anything
+    if (!accountId || accountId === 'undefined') {
+      throw new Error('Invalid Account ID.');
+    }
+    if (!userId) {
+      throw new Error('Authentication error: User ID missing.');
+    }
+
     const accountRef = getRef(`accountInventory/${accountId}`);
     const userRef = getRef(`users/${userId}`);
     
     // Phase 1: Atomically reserve the account
     const reserveResult = await accountRef.transaction((currentAccount) => {
-      // If account doesn't exist or isn't available, abort transaction
-      if (currentAccount === null) return; // Abort
-      if (currentAccount.status !== 'available') return; // Abort
+      // If account doesn't exist
+      if (currentAccount === null) {
+        console.log('[Purchase Debug] Transaction aborted: Account does not exist');
+        return; 
+      }
       
-      // Reserve it
-      currentAccount.status = 'reserved';
-      currentAccount.reservedAt = Date.now();
-      currentAccount.reservedBy = userId;
-      return currentAccount; // Commit reservation
+      // If account is not available
+      if (currentAccount.status !== 'available') {
+        console.log(`[Purchase Debug] Transaction aborted: Status is ${currentAccount.status}`);
+        return; 
+      }
+      
+      // Create a new object to return (best practice for Firebase transactions)
+      const updatedAccount = { ...currentAccount };
+      updatedAccount.status = 'reserved';
+      updatedAccount.reservedAt = Date.now();
+      updatedAccount.reservedBy = userId;
+      
+      return updatedAccount; 
     });
 
     // If reservation failed because it wasn't available
     if (!reserveResult.committed) {
+      console.error(`[Purchase Error] Failed to reserve account ${accountId}. It may be sold or reserved.`);
       throw new Error('Account is no longer available.');
     }
 
     const accountData = reserveResult.snapshot.val();
-    const actualPrice = accountData.price;
+    
+    // =========================================================
+    // ENFORCE DYNAMIC PRICING: $10 per 1,000 followers
+    // =========================================================
+    const followersCount = parseInt(accountData.followers) || 0;
+    const actualPrice = (followersCount / 1000) * 10;
 
     try {
       // Phase 2: Atomically verify and debit wallet
       const walletResult = await userRef.transaction((currentUser) => {
-        if (currentUser === null) return; // Abort
+        if (currentUser === null) {
+          console.log('[Purchase Debug] Wallet transaction aborted: User does not exist');
+          return; 
+        }
         const currentBalance = parseFloat(currentUser.balance) || 0;
         
         if (currentBalance < actualPrice) {
-          return; // Abort - insufficient funds
+          console.log(`[Purchase Debug] Wallet transaction aborted: Insufficient funds (${currentBalance} < ${actualPrice})`);
+          return; 
         }
         
         currentUser.balance = currentBalance - actualPrice;
-        return currentUser; // Commit wallet deduction
+        return currentUser; 
       });
 
       if (!walletResult.committed) {
@@ -124,13 +148,12 @@ class AccountService {
 
       const updates = {};
       
-      // 1. Update Account Inventory
       updates[`accountInventory/${accountId}/status`] = 'sold';
+      updates[`accountInventory/${accountId}/price`] = actualPrice; 
       updates[`accountInventory/${accountId}/soldAt`] = Date.now();
       updates[`accountInventory/${accountId}/soldTo`] = userId;
       updates[`accountInventory/${accountId}/purchaseId`] = purchaseId;
 
-      // 2. Create Wallet Transaction (Matching your wallet controller pattern)
       updates[`transactions/${txId}`] = {
         userId: userId,
         type: 'debit',
@@ -140,7 +163,6 @@ class AccountService {
         createdAt: Date.now()
       };
 
-      // 3. Create Purchase Record
       updates[`accountPurchases/${purchaseId}`] = {
         purchaseId,
         userId,
@@ -156,7 +178,6 @@ class AccountService {
         purchasedAt: Date.now()
       };
 
-      // 4. Create Invoice Record
       updates[`invoices/${invoiceId}`] = {
         invoiceId,
         userId,
@@ -171,7 +192,6 @@ class AccountService {
         createdAt: Date.now()
       };
 
-      // 5. Create Account Audit Transaction
       updates[`accountTransactions/${accTxId}`] = {
         transactionId: accTxId,
         purchaseId,
@@ -184,22 +204,19 @@ class AccountService {
         createdAt: Date.now()
       };
 
-      // Execute all updates atomically
       await getRef('/').update(updates);
-
-      // Phase 4: Notification (Integrate your service here)
-      // await notificationService.sendNotification(userId, 'Account Purchase Successful', `Your ${accountData.platform} account has been purchased successfully.`);
 
       return { purchaseId, invoiceId };
 
     } catch (error) {
-      // If wallet fails or final update fails, revert the reservation
+      // Revert reservation if wallet fails or update fails
+      console.error(`[Purchase Error] Reverting reservation for account ${accountId}:`, error.message);
       await accountRef.update({ 
         status: 'available', 
         reservedAt: null, 
         reservedBy: null 
       });
-      throw error; // Re-throw the error to be caught by controller
+      throw error; 
     }
   }
 
@@ -209,11 +226,10 @@ class AccountService {
     
     if (snapshot.exists()) {
       const allPurchases = snapshot.val();
-      // Filter in JS (Bypasses Firebase Index requirement)
       purchases = Object.keys(allPurchases)
         .filter(key => allPurchases[key].userId === userId)
         .map(key => ({ id: key, ...allPurchases[key] }))
-        .reverse(); // Newest first
+        .reverse();
     }
     return purchases;
   }
@@ -224,12 +240,10 @@ class AccountService {
     
     const purchaseData = snapshot.val();
     
-    // Security: Verify ownership
     if (purchaseData.userId !== userId) {
       throw new Error('Unauthorized: You do not own this purchase.');
     }
 
-    // Fetch the full account details to return credentials
     const accountDoc = await getRef(`accountInventory/${purchaseData.accountId}`).get();
     if (accountDoc.exists()) {
       purchaseData.accountDetails = accountDoc.val();
