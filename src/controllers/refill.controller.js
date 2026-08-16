@@ -63,21 +63,15 @@ export const getRefills = async (req, res, next) => {
     try {
         const userId = req.user.id;
 
-        // Securely query ONLY the user's refills
-        const snapshot = await getRef('refills')
-            .orderByChild('userId')
-            .equalTo(userId)
-            .get();
+        // Fetch all refills and filter in memory (bypasses Firebase indexing issues)
+        const snapshot = await getRef('refills').get();
+        let refills = snapshot.exists() ? Object.values(snapshot.val()) : [];
 
-        let refills = [];
-        
-        if (snapshot.exists()) {
-            const data = snapshot.val();
-            for (const key in data) {
-                if (Object.hasOwnProperty.call(data, key)) {
-                    refills.push({ id: key, ...data[key] });
-                }
-            }
+        // SECURE FILTER: Only show refills belonging to the authenticated user
+        // Admins can see all refills, normal users only see their own
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+        if (!isAdmin) {
+            refills = refills.filter(r => r.userId === userId);
         }
 
         // Sort newest first
