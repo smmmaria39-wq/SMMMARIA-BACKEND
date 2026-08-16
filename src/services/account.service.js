@@ -1,10 +1,9 @@
-const admin = require('firebase-admin');
-const db = admin.firestore();
+import { getRef } from '../database/firebase.js';
 
-// IMPORTANT: Assume walletService and notificationService are imported from existing system
-// const walletService = require('./wallet.service'); 
-// const notificationService = require('./notification.service');
+// IMPORTANT: Assume notificationService is imported from existing system
+// import notificationService from './notification.service.js';
 
+// Helper to remove sensitive credentials from public responses
 const sanitizeAccount = (account) => {
   if (!account) return null;
   const { email, emailPassword, accountPassword, recoveryEmail, recoveryEmailPassword, twoFactorSecret, ...safeData } = account;
@@ -13,180 +12,230 @@ const sanitizeAccount = (account) => {
 
 class AccountService {
   async getCategories() {
-    const snapshot = await db.collection('accountCategories').where('active', '==', true).get();
+    const snapshot = await getRef('accountCategories').get();
     let categories = [];
-    for (const doc of snapshot.docs) {
-      const catData = doc.data();
-      // Calculate live stock
-      const invSnapshot = await db.collection('accountInventory')
-        .where('categoryId', '==', doc.id)
-        .where('status', '==', 'available')
-        .get();
+    
+    if (snapshot.exists()) {
+      const allCategories = snapshot.val();
       
-      const availableCount = invSnapshot.size;
-      let stockStatus = 'OUT OF STOCK';
-      if (availableCount > 0 && availableCount <= (catData.lowStockThreshold || 10)) stockStatus = 'LOW STOCK';
-      else if (availableCount > (catData.lowStockThreshold || 10)) stockStatus = 'IN STOCK';
+      // Fetch inventory to calculate live stock
+      const invSnapshot = await getRef('accountInventory').get();
+      const allInventory = invSnapshot.exists() ? invSnapshot.val() : {};
 
-      categories.push({
-        ...catData,
-        categoryId: doc.id,
-        availableCount,
-        stockStatus
-      });
+      for (const [catId, catData] of Object.entries(allCategories)) {
+        if (!catData.active) continue;
+
+        let availableCount = 0;
+        for (const acc of Object.values(allInventory)) {
+          if (acc.categoryId === catId && acc.status === 'available') {
+            availableCount++;
+          }
+        }
+
+        let stockStatus = 'OUT OF STOCK';
+        const threshold = catData.lowStockThreshold || 10;
+        if (availableCount > 0 && availableCount <= threshold) stockStatus = 'LOW STOCK';
+        else if (availableCount > threshold) stockStatus = 'IN STOCK';
+
+        categories.push({
+          ...catData,
+          categoryId: catId,
+          availableCount,
+          stockStatus
+        });
+      }
     }
     return categories;
   }
 
   async getAccounts(filters) {
-    let query = db.collection('accountInventory').where('status', '==', 'available');
-    
-    if (filters.platform) query = query.where('platform', '==', filters.platform);
-    if (filters.categoryId) query = query.where('categoryId', '==', filters.categoryId);
-    
-    const snapshot = await query.get();
+    const snapshot = await getRef('accountInventory').get();
     let accounts = [];
-    snapshot.forEach(doc => {
-      accounts.push(sanitizeAccount({ id: doc.id, ...doc.data() }));
-    });
+    
+    if (snapshot.exists()) {
+      const allAccounts = snapshot.val();
+      for (const [id, acc] of Object.entries(allAccounts)) {
+        if (acc.status !== 'available') continue;
+        if (filters.platform && acc.platform !== filters.platform) continue;
+        if (filters.categoryId && acc.categoryId !== filters.categoryId) continue;
+        
+        accounts.push(sanitizeAccount({ id, ...acc }));
+      }
+    }
     return accounts;
   }
 
   async getAccountDetails(accountId) {
-    const docRef = db.collection('accountInventory').doc(accountId);
-    const doc = await docRef.get();
-    if (!doc.exists) throw new Error('Account not found');
-    return sanitizeAccount({ id: doc.id, ...doc.data() });
+    const snapshot = await getRef(`accountInventory/${accountId}`).get();
+    if (!snapshot.exists()) throw new Error('Account not found');
+    return sanitizeAccount({ id: accountId, ...snapshot.val() });
   }
 
   async purchaseAccount(accountId, userId) {
-    const accountRef = db.collection('accountInventory').doc(accountId);
+    const accountRef = getRef(`accountInventory/${accountId}`);
+    const userRef = getRef(`users/${userId}`);
     
-    // Phase 1: Reserve the atomically
-    await db.runTransaction(async (transaction) => {
-      const accountDoc = await transaction.get(accountRef);
-      if (!accountDoc.exists) throw new Error('Account does not exist');
+    // Phase 1: Atomically reserve the account
+    const reserveResult = await accountRef.transaction((currentAccount) => {
+      // If account doesn't exist or isn't available, abort transaction
+      if (currentAccount === null) return; // Abort
+      if (currentAccount.status !== 'available') return; // Abort
       
-      const accountData = accountDoc.data();
-      if (accountData.status !== 'available') {
-        throw new Error('Account is no longer available.');
-      }
-
-      transaction.update(accountRef, {
-        status: 'reserved',
-        reservedAt: admin.firestore.FieldValue.serverTimestamp(),
-        reservedBy: userId
-      });
+      // Reserve it
+      currentAccount.status = 'reserved';
+      currentAccount.reservedAt = Date.now();
+      currentAccount.reservedBy = userId;
+      return currentAccount; // Commit reservation
     });
 
-    // Phase 2: Process Wallet (Using mock logic to integrate with existing wallet)
-    // NOTE: Replace this block with your actual wallet service call
-    // await walletService.debitWallet(userId, actualPrice, `Purchase of ${accountData.platform} account`);
-    let accountData;
+    // If reservation failed because it wasn't available
+    if (!reserveResult.committed) {
+      throw new Error('Account is no longer available.');
+    }
+
+    const accountData = reserveResult.snapshot.val();
+    const actualPrice = accountData.price;
+
     try {
-      const accountDoc = await accountRef.get();
-      accountData = accountDoc.data();
-      const actualPrice = accountData.price;
-
-      // MOCK WALLET DEBIT - Integrate your existing wallet here
-      // If it fails, we revert the reservation
-      // try { await walletService.debit(...) } catch(e) { throw e }
-      
-      // Phase 3: Finalize Sale
-      await db.runTransaction(async (transaction) => {
-        const freshDoc = await transaction.get(accountRef);
-        if (freshDoc.data().status !== 'reserved' || freshDoc.data().reservedBy !== userId) {
-          throw new Error('Reservation lost or overridden.');
+      // Phase 2: Atomically verify and debit wallet
+      const walletResult = await userRef.transaction((currentUser) => {
+        if (currentUser === null) return; // Abort
+        const currentBalance = parseFloat(currentUser.balance) || 0;
+        
+        if (currentBalance < actualPrice) {
+          return; // Abort - insufficient funds
         }
-
-        const purchaseRef = db.collection('accountPurchases').doc();
-        const transactionRef = db.collection('accountTransactions').doc();
-        const invoiceRef = db.collection('invoices').doc();
-
-        const purchaseData = {
-          purchaseId: purchaseRef.id,
-          userId,
-          accountId,
-          categoryId: accountData.categoryId,
-          platform: accountData.platform,
-          username: accountData.username,
-          amount: actualPrice,
-          currency: accountData.currency || 'USD',
-          walletTransactionId: transactionRef.id, // Link to wallet transaction
-          invoiceId: invoiceRef.id,
-          status: 'completed',
-          purchasedAt: admin.firestore.FieldValue.serverTimestamp()
-        };
-
-        transaction.set(purchaseRef, purchaseData);
-        transaction.update(accountRef, {
-          status: 'sold',
-          soldAt: admin.firestore.FieldValue.serverTimestamp(),
-          soldTo: userId,
-          purchaseId: purchaseRef.id
-        });
-
-        // Create invoice record
-        transaction.set(invoiceRef, {
-          invoiceId: invoiceRef.id,
-          userId,
-          purchaseId: purchaseRef.id,
-          accountId,
-          platform: accountData.platform,
-          username: accountData.username,
-          accountType: accountData.accountType,
-          price: actualPrice,
-          currency: accountData.currency || 'USD',
-          status: 'paid',
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-
-        // Create audit transaction record
-        transaction.set(transactionRef, {
-          transactionId: transactionRef.id,
-          purchaseId: purchaseRef.id,
-          userId,
-          accountId,
-          type: 'account_purchase',
-          amount: actualPrice,
-          currency: accountData.currency || 'USD',
-          status: 'completed',
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+        
+        currentUser.balance = currentBalance - actualPrice;
+        return currentUser; // Commit wallet deduction
       });
 
-      // Phase 4: Notification
+      if (!walletResult.committed) {
+        throw new Error('Insufficient wallet balance.');
+      }
+
+      const newBalance = walletResult.snapshot.val().balance;
+
+      // Phase 3: Finalize Sale (Multi-path atomic update)
+      const txId = getRef('transactions').push().key;
+      const purchaseId = getRef('accountPurchases').push().key;
+      const invoiceId = getRef('invoices').push().key;
+      const accTxId = getRef('accountTransactions').push().key;
+
+      const updates = {};
+      
+      // 1. Update Account Inventory
+      updates[`accountInventory/${accountId}/status`] = 'sold';
+      updates[`accountInventory/${accountId}/soldAt`] = Date.now();
+      updates[`accountInventory/${accountId}/soldTo`] = userId;
+      updates[`accountInventory/${accountId}/purchaseId`] = purchaseId;
+
+      // 2. Create Wallet Transaction (Matching your wallet controller pattern)
+      updates[`transactions/${txId}`] = {
+        userId: userId,
+        type: 'debit',
+        amount: actualPrice,
+        note: `Purchase of ${accountData.platform} account (${accountData.username})`,
+        balanceAfter: newBalance,
+        createdAt: Date.now()
+      };
+
+      // 3. Create Purchase Record
+      updates[`accountPurchases/${purchaseId}`] = {
+        purchaseId,
+        userId,
+        accountId,
+        categoryId: accountData.categoryId,
+        platform: accountData.platform,
+        username: accountData.username,
+        amount: actualPrice,
+        currency: accountData.currency || 'USD',
+        walletTransactionId: txId,
+        invoiceId: invoiceId,
+        status: 'completed',
+        purchasedAt: Date.now()
+      };
+
+      // 4. Create Invoice Record
+      updates[`invoices/${invoiceId}`] = {
+        invoiceId,
+        userId,
+        purchaseId,
+        accountId,
+        platform: accountData.platform,
+        username: accountData.username,
+        accountType: accountData.accountType,
+        price: actualPrice,
+        currency: accountData.currency || 'USD',
+        status: 'paid',
+        createdAt: Date.now()
+      };
+
+      // 5. Create Account Audit Transaction
+      updates[`accountTransactions/${accTxId}`] = {
+        transactionId: accTxId,
+        purchaseId,
+        userId,
+        accountId,
+        type: 'account_purchase',
+        amount: actualPrice,
+        currency: accountData.currency || 'USD',
+        status: 'completed',
+        createdAt: Date.now()
+      };
+
+      // Execute all updates atomically
+      await getRef('/').update(updates);
+
+      // Phase 4: Notification (Integrate your service here)
       // await notificationService.sendNotification(userId, 'Account Purchase Successful', `Your ${accountData.platform} account has been purchased successfully.`);
 
-      return { purchaseId: purchaseRef.id, invoiceId: invoiceRef.id };
+      return { purchaseId, invoiceId };
+
     } catch (error) {
-      // Revert reservation if wallet fails
-      await accountRef.update({ status: 'available', reservedAt: admin.firestore.FieldValue.delete(), reservedBy: admin.firestore.FieldValue.delete() });
-      throw error;
+      // If wallet fails or final update fails, revert the reservation
+      await accountRef.update({ 
+        status: 'available', 
+        reservedAt: null, 
+        reservedBy: null 
+      });
+      throw error; // Re-throw the error to be caught by controller
     }
   }
 
   async getUserPurchases(userId) {
-    const snapshot = await db.collection('accountPurchases').where('userId', '==', userId).get();
+    const snapshot = await getRef('accountPurchases').get();
     let purchases = [];
-    snapshot.forEach(doc => purchases.push({ id: doc.id, ...doc.data() }));
+    
+    if (snapshot.exists()) {
+      const allPurchases = snapshot.val();
+      // Filter in JS (Bypasses Firebase Index requirement)
+      purchases = Object.keys(allPurchases)
+        .filter(key => allPurchases[key].userId === userId)
+        .map(key => ({ id: key, ...allPurchases[key] }))
+        .reverse(); // Newest first
+    }
     return purchases;
   }
 
   async getUserPurchaseDetails(purchaseId, userId) {
-    const doc = await db.collection('accountPurchases').doc(purchaseId).get();
-    if (!doc.exists) throw new Error('Purchase not found');
-    const purchaseData = doc.data();
+    const snapshot = await getRef(`accountPurchases/${purchaseId}`).get();
+    if (!snapshot.exists()) throw new Error('Purchase not found');
     
-    if (purchaseData.userId !== userId) throw new Error('Unauthorized: You do not own this purchase.');
+    const purchaseData = snapshot.val();
+    
+    // Security: Verify ownership
+    if (purchaseData.userId !== userId) {
+      throw new Error('Unauthorized: You do not own this purchase.');
+    }
 
-    // Fetch the actual account to return credentials
-    const accountDoc = await db.collection('accountInventory').doc(purchaseData.accountId).get();
-    if (accountDoc.exists) {
-      purchaseData.accountDetails = accountDoc.data();
+    // Fetch the full account details to return credentials
+    const accountDoc = await getRef(`accountInventory/${purchaseData.accountId}`).get();
+    if (accountDoc.exists()) {
+      purchaseData.accountDetails = accountDoc.val();
     }
     return purchaseData;
   }
 }
 
-module.exports = new AccountService();
+export default new AccountService();
