@@ -244,7 +244,7 @@ class AccountService {
       purchaseData.accountDetails = accountDoc.val();
     }
     return purchaseData;
-  SD
+  
 }
 
 export default new AccountService();
