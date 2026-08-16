@@ -1,4 +1,4 @@
-const { body, query, param } = require('express-validator');
+import { body, query, param } from 'express-validator';
 
 const createAccountRules = [
   body('categoryId').isString().notEmpty(),
@@ -34,7 +34,7 @@ const purchaseAccountRules = [
   param('id').isString().notEmpty()
 ];
 
-module.exports = {
+export {
   createAccountRules,
   updateAccountRules,
   createCategoryRules,
