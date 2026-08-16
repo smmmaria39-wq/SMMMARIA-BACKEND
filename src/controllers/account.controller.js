@@ -1,4 +1,4 @@
-const accountService = require('../services/account.service');
+import accountService from '../services/account.service.js';
 
 class AccountController {
   async getCategories(req, res, next) {
@@ -58,4 +58,4 @@ class AccountController {
   }
 }
 
-module.exports = new AccountController();
+export default new AccountController();
