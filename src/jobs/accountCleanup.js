@@ -9,9 +9,14 @@ import { logger } from '../utils/logger.js';
 // Runs every 10 minutes
 export const startAccountCleanupJob = () => {
   cron.schedule('*/10 * * * *', async () => {
+    logger.info('[Cron] Running account cleanup job...');
+    
     try {
       const snapshot = await getRef('accountInventory').get();
-      if (!snapshot.exists()) return;
+      if (!snapshot.exists()) {
+        logger.info('[Cron] Account cleanup finished. No inventory found.');
+        return;
+      }
 
       const now = Date.now();
       const tenMinutes = 10 * 60 * 1000;
@@ -35,10 +40,12 @@ export const startAccountCleanupJob = () => {
 
       if (cleanedCount > 0) {
         await getRef('/').update(updates);
-        logger.info(`🧹 Account Cleanup: Reverted ${cleanedCount} abandoned reserved accounts to available.`);
+        logger.info(`🧹 [Cron] Account Cleanup: Reverted ${cleanedCount} abandoned reserved accounts to available.`);
+      } else {
+        logger.info('[Cron] Account cleanup finished. No stuck accounts found.');
       }
     } catch (error) {
-      logger.error(`Account Cleanup Job Error: ${error.message}`);
+      logger.error(`[Cron] Account Cleanup Job Error: ${error.message}`);
     }
   });
 };
