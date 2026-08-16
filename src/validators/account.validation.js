@@ -1,42 +1,58 @@
-import { body, query, param } from 'express-validator';
+import { z } from 'zod';
 
-const createAccountRules = [
-  body('categoryId').isString().notEmpty(),
-  body('platform').isString().notEmpty(),
-  body('username').isString().notEmpty(),
-  body('email').optional().isString(),
-  body('emailPassword').optional().isString(),
-  body('accountPassword').optional().isString(),
-  body('accountType').optional().isString(),
-  body('accountAge').optional().isString(),
-  body('followers').optional().isNumeric(),
-  body('country').optional().isString(),
-  body('niche').optional().isString(),
-  body('price').isNumeric().toFloat(),
-  body('currency').optional().isString()
-];
+// Schema for creating an account
+const createAccountSchema = z.object({
+  body: z.object({
+    categoryId: z.string().min(1, 'Category ID is required'),
+    platform: z.string().min(1, 'Platform is required'),
+    username: z.string().min(1, 'Username is required'),
+    email: z.string().optional(),
+    emailPassword: z.string().optional(),
+    accountPassword: z.string().optional(),
+    accountType: z.string().optional(),
+    accountAge: z.string().optional(),
+    followers: z.number().optional(),
+    country: z.string().optional(),
+    niche: z.string().optional(),
+    price: z.number({ invalid_type_error: 'Price must be a number' }).positive('Price must be greater than 0'),
+    currency: z.string().optional()
+  })
+});
 
-const updateAccountRules = [
-  body('price').optional().isNumeric().toFloat(),
-  body('status').optional().isIn(['available', 'reserved', 'sold', 'disabled']),
-  // other fields optional
-];
+// Schema for updating an account
+const updateAccountSchema = z.object({
+  body: z.object({
+    price: z.number().positive().optional(),
+    status: z.enum(['available', 'reserved', 'sold', 'disabled']).optional(),
+    accountType: z.string().optional(),
+    accountAge: z.string().optional(),
+    followers: z.number().optional(),
+    country: z.string().optional(),
+    niche: z.string().optional()
+  })
+});
 
-const createCategoryRules = [
-  body('name').isString().notEmpty(),
-  body('platform').isString().notEmpty(),
-  body('description').optional().isString(),
-  body('icon').optional().isString(),
-  body('lowStockThreshold').optional().isNumeric().toInt()
-];
+// Schema for creating a category
+const createCategorySchema = z.object({
+  body: z.object({
+    name: z.string().min(1, 'Name is required'),
+    platform: z.string().min(1, 'Platform is required'),
+    description: z.string().optional(),
+    icon: z.string().optional(),
+    lowStockThreshold: z.number().int().optional().default(10)
+  })
+});
 
-const purchaseAccountRules = [
-  param('id').isString().notEmpty()
-];
+// Schema for purchase request (just needs the ID in params)
+const purchaseAccountSchema = z.object({
+  params: z.object({
+    id: z.string().min(1, 'Account ID is required')
+  })
+});
 
 export {
-  createAccountRules,
-  updateAccountRules,
-  createCategoryRules,
-  purchaseAccountRules
+  createAccountSchema,
+  updateAccountSchema,
+  createCategorySchema,
+  purchaseAccountSchema
 };
