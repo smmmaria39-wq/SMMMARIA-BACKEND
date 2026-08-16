@@ -13,15 +13,25 @@ import { successResponse, errorResponse } from '../utils/response.js';
  */
 export const createTicket = async (req, res, next) => {
  try {
-  const { subject, message, priority } = req.body;
+  const { subject, orderId, requestType, message, priority } = req.body;
   const ticketId = generateUUID();
   const messageId = generateUUID();
+  
+  // Normalize Order IDs (trim spaces, remove empty values)
+  const normalizedOrderId = orderId 
+   ? orderId.split(',').map(id => id.trim()).filter(Boolean).join(',') 
+   : null;
+
+  // Only store requestType if subject is 'Request', otherwise enforce null
+  const finalRequestType = subject === 'Request' ? (requestType || null) : null;
   
   const ticketData = {
    id: ticketId,
    userId: req.user.id,
    username: req.user.username,
    subject,
+   orderId: normalizedOrderId,
+   requestType: finalRequestType,
    priority: priority || 'medium',
    status: 'open',
    createdAt: new Date().toISOString(),
@@ -82,7 +92,7 @@ export const replyTicket = async (req, res, next) => {
   const updates = { updatedAt: new Date().toISOString() };
   if (ticket.status === 'closed') updates.status = 'open'; // Reopen if closed
   if (req.user.role === 'user') updates.status = 'awaiting_admin_reply';
-  if (req.user.role === 'admin') updates.status = 'awaiting_user_reply';
+  if (req.user.role === 'admin' || req.user.role === 'super_admin') updates.status = 'awaiting_user_reply';
   
   await ticketRef.update(updates);
   
