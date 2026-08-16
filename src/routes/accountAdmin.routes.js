@@ -18,7 +18,7 @@ router.patch('/:id', validate(updateAccountSchema), accountAdminController.updat
 router.delete('/:id', accountAdminController.deleteAccount);
 router.post('/:id/disable', accountAdminController.disableAccount);
 
-router.get('/categories', (req, res) => res.json({ message: 'Admin get categories' }));
+router.get('/categories', accountAdminController.getCategories);
 router.post('/categories', validate(createCategorySchema), accountAdminController.createCategory);
 router.patch('/categories/:id', (req, res) => res.json({ message: 'Update category endpoint' }));
 
