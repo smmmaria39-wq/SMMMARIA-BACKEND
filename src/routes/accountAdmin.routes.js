@@ -1,12 +1,12 @@
-const express = require('express');
-const router = express.Router();
-const accountAdminController = require('../controllers/accountAdmin.controller');
-const { createAccountRules, updateAccountRules, createCategoryRules } = require('../validators/account.validation');
+import { Router } from 'express';
+import accountAdminController from '../controllers/accountAdmin.controller.js';
+import { createAccountRules, updateAccountRules, createCategoryRules } from '../validators/account.validation.js';
+import authMiddleware from '../middleware/auth.js';
+import adminMiddleware from '../middleware/admin.js';
+
+const router = Router();
 
 // Protect all routes with Admin middleware
-const authMiddleware = require('../middleware/auth');
-const adminMiddleware = require('../middleware/admin');
-
 router.use(authMiddleware, adminMiddleware);
 
 // Inventory Management
@@ -25,4 +25,4 @@ router.get('/categories', (req, res) => res.json({ message: 'Admin get categorie
 router.post('/categories', createCategoryRules, accountAdminController.createCategory);
 router.patch('/categories/:id', (req, res) => res.json({ message: 'Update category endpoint' }));
 
-module.exports = router;
+export default router;
