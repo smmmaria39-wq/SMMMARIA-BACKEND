@@ -13,9 +13,56 @@ const router = express.Router();
 
 const createTicketSchema = {
  body: z.object({
-  subject: z.string().min(3),
-  message: z.string().min(5),
-  priority: z.enum(['low', 'medium', 'high']).optional()
+  subject: z.enum([
+   'Order',
+   'Payment',
+   'API',
+   'Request',
+   'Discount',
+   'Others'
+  ]),
+  
+  orderId: z.string().trim().optional(),
+  
+  requestType: z.enum([
+   'Speed Up',
+   'Cancel',
+   'Refill',
+   'Restart',
+   'Not Started',
+   'Others'
+  ]).optional(),
+  
+  message: z.string().trim().min(5).max(5000),
+  
+  priority: z.enum(['low', 'medium', 'high']).optional().default('medium')
+ }).superRefine((data, ctx) => {
+  // Conditional Validation for 'Order' Subject
+  if (data.subject === 'Order' && !data.orderId) {
+   ctx.addIssue({
+    code: 'custom',
+    path: ['orderId'],
+    message: 'Order ID is required for Order tickets'
+   });
+  }
+
+  // Conditional Validation for 'Request' Subject
+  if (data.subject === 'Request') {
+   if (!data.orderId) {
+    ctx.addIssue({
+     code: 'custom',
+     path: ['orderId'],
+     message: 'Order ID is required for Request tickets'
+    });
+   }
+   if (!data.requestType) {
+    ctx.addIssue({
+     code: 'custom',
+     path: ['requestType'],
+     message: 'Request type is required'
+    });
+   }
+  }
  })
 };
 
