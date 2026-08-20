@@ -167,3 +167,33 @@ export const placeSupplierOrder = async (apiUrl, apiKey, orderData) => {
   throw new Error('Failed to place order with supplier');
  }
 };
+
+/**
+ * Fetch categories from an external supplier API
+ * @param {String} apiUrl 
+ * @param {String} apiKey 
+ * @returns {Promise<Array>} - Array of unique category strings
+ */
+export const fetchSupplierCategories = async (apiUrl, apiKey) => {
+  try {
+    const response = await axios.post(apiUrl, {
+      key: apiKey,
+      action: 'services'
+    }, { timeout: env.supplier.timeout });
+    
+    const rawServices = response.data;
+    if (!Array.isArray(rawServices)) return [];
+
+    const categories = new Set();
+    for (const svc of rawServices) {
+      if (svc.category) {
+        categories.add(svc.category);
+      }
+    }
+    
+    return Array.from(categories).sort();
+  } catch (error) {
+    logger.error(`Error fetching supplier categories: ${error.message}`);
+    throw new Error('Failed to fetch categories from supplier API');
+  }
+};
