@@ -5,7 +5,7 @@
 import { getRef } from '../database/firebase.js';
 import { generateUUID } from '../utils/helpers.js';
 import { successResponse, errorResponse } from '../utils/response.js';
-import { fetchSupplierBalance, fetchSupplierServices } from '../services/supplier.service.js';
+import { fetchSupplierBalance, fetchSupplierServices, fetchSupplierCategories } from '../services/supplier.service.js';
 
 /**
  * @desc    Get all suppliers (Admin)
@@ -216,6 +216,26 @@ export const syncSupplierServices = async (req, res, next) => {
             : `Selected services synchronized successfully. Added ${newCount} new, updated ${updatedCount} existing.`;
             
         return successResponse(res, successMsg, syncData);
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @desc    Get supplier categories directly from external API (Admin)
+ * @route   GET /api/v1/suppliers/:id/categories
+ */
+export const getSupplierCategories = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const snapshot = await getRef(`suppliers/${id}`).get();
+        
+        if (!snapshot.exists()) return errorResponse(res, 'Supplier not found', 404);
+        
+        const supplier = snapshot.val();
+        const categories = await fetchSupplierCategories(supplier.apiUrl, supplier.apiKey);
+        
+        return successResponse(res, 'Supplier categories fetched successfully', categories);
     } catch (error) {
         next(error);
     }
