@@ -98,12 +98,14 @@ export const checkSupplierBalance = async (req, res, next) => {
 
 /**
  * @desc    Sync services from supplier into our DB (Admin)
- * Only adds NEW working services. Updates existing ones without duplicating.
+ * Supports selective sync: all, category, or specific serviceId
  * @route   POST /api/v1/suppliers/:id/sync
  */
 export const syncSupplierServices = async (req, res, next) => {
     try {
         const { id } = req.params;
+        const { type = 'all', category, serviceId } = req.body; // Extracted from Zod validation
+        
         const snapshot = await getRef(`suppliers/${id}`).get();
         
         if (!snapshot.exists()) return errorResponse(res, 'Supplier not found', 404);
@@ -113,7 +115,30 @@ export const syncSupplierServices = async (req, res, next) => {
         // 1. Fetch filtered, working services from the external API
         const externalServices = await fetchSupplierServices(supplier.apiUrl, supplier.apiKey);
         
-        // 2. Fetch our existing services for this supplier to prevent duplicates
+        // 2. Apply Selective Filter BEFORE entering the Firebase sync loop
+        let servicesToSync = externalServices;
+        
+        if (type === 'category') {
+            const targetCat = String(category).trim().toLowerCase();
+            servicesToSync = externalServices.filter(s => 
+                String(s.category || 'Uncategorized').trim().toLowerCase() === targetCat
+            );
+        } else if (type === 'service') {
+            const targetId = String(serviceId).trim();
+            servicesToSync = externalServices.filter(s => 
+                String(s.service).trim() === targetId
+            );
+        }
+        
+        // 3. Handle "No Match" scenario cleanly
+        if (servicesToSync.length === 0) {
+            const message = type === 'category' 
+                ? `No services found for category: ${category}` 
+                : `Service ID ${serviceId} was not found.`;
+            return successResponse(res, message, { syncType: type, syncedCount: 0 });
+        }
+
+        // 4. Fetch our existing services for this supplier to prevent duplicates
         const existingServicesSnap = await getRef('services').orderByChild('supplierId').equalTo(id).get();
         const existingMap = {};
         if (existingServicesSnap.exists()) {
@@ -128,8 +153,8 @@ export const syncSupplierServices = async (req, res, next) => {
         const updates = {};
         const verifiedTimestamp = new Date().toISOString();
 
-        // 3. Loop through downloaded services and prepare batch updates
-        for (const extService of externalServices) {
+        // 5. Loop through FILTERED services and prepare batch updates
+        for (const extService of servicesToSync) {
             // Determine if this is a new service or an existing one
             const internalId = existingMap[extService.service] || `${id}_${extService.service}`;
             const isNew = !existingMap[extService.service];
@@ -170,15 +195,27 @@ export const syncSupplierServices = async (req, res, next) => {
             }
         }
 
-        // 4. Execute a single, lightning-fast batch update to Firebase
+        // 6. Execute a single, lightning-fast batch update to Firebase
         if (Object.keys(updates).length > 0) {
             await getRef().update(updates);
         }
 
-        // 5. Update supplier's last sync time
+        // 7. Update supplier's last sync time
         await getRef(`suppliers/${id}/lastSync`).set(verifiedTimestamp);
         
-        return successResponse(res, `Sync complete. Added ${newCount} new working services. Updated ${updatedCount} existing services.`);
+        // 8. Return formatted response
+        const syncData = {
+            syncType: type,
+            syncedCount: servicesToSync.length,
+            newCount,
+            updatedCount
+        };
+        
+        const successMsg = type === 'all' 
+            ? `All services synchronized successfully. Added ${newCount} new, updated ${updatedCount} existing.`
+            : `Selected services synchronized successfully. Added ${newCount} new, updated ${updatedCount} existing.`;
+            
+        return successResponse(res, successMsg, syncData);
     } catch (error) {
         next(error);
     }
