@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-import { getSuppliers, addSupplier, checkSupplierBalance, syncSupplierServices, deleteSupplier } from '../controllers/supplier.controller.js';
+import { getSuppliers, addSupplier, checkSupplierBalance, syncSupplierServices, deleteSupplier, getSupplierCategories } from '../controllers/supplier.controller.js';
 
 const router = express.Router();
 
@@ -40,6 +40,10 @@ const syncSupplierSchema = {
 // Routes
 router.get('/', protect, admin, getSuppliers);
 router.post('/', protect, admin, validate(addSupplierSchema), addSupplier);
+
+// Get supplier categories from external API
+router.get('/:id/categories', protect, admin, getSupplierCategories);
+
 router.get('/:id/balance', protect, admin, checkSupplierBalance);
 
 // Updated Sync Route with Validation
