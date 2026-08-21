@@ -16,13 +16,13 @@ const chatLimiter = rateLimit({
 router.use(protect);
 
 router.get('/private', chatController.getPrivateChat);
-router.post('/private', chatLimiter, validate(sendMessageSchema), chatController.sendPrivateMessage);
+router.post('/private', chatLimiter, validate(sendMessageSchema), chatController.sendPrivateMessageCtrl);
 router.put('/private/read', chatController.markPrivateRead);
 
 router.get('/public', chatController.getPublicChat);
-router.post('/public', chatLimiter, validate(sendMessageSchema), chatController.sendPublicMessage);
+router.post('/public', chatLimiter, validate(sendMessageSchema), chatController.sendPublicMessageCtrl);
 
-router.patch('/messages/:messageId', validate(editMessageSchema), chatController.updateMessage);
-router.delete('/messages/:messageId', chatController.deleteMessage);
+router.patch('/messages/:messageId', validate(editMessageSchema), chatController.updateMessageCtrl);
+router.delete('/messages/:messageId', chatController.deleteMessageCtrl);
 
 export default router;
