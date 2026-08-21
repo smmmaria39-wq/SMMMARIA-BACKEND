@@ -179,7 +179,7 @@ export const fetchSupplierCategories = async (apiUrl, apiKey) => {
     const response = await axios.post(apiUrl, {
       key: apiKey,
       action: 'services'
-    }, { timeout: env.supplier.timeout });
+    }, { timeout: 30000 }); // <-- Changed to 30000 (30 seconds)
     
     const rawServices = response.data;
     if (!Array.isArray(rawServices)) return [];
