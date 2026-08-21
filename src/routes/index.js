@@ -21,6 +21,10 @@ import adminRoutes from './admin.routes.js';
 import accountRoutes from './account.routes.js';
 import accountAdminRoutes from './accountAdmin.routes.js';
 
+// ---> NEW IMPORTS FOR LIVE CHAT <---
+import chatRoutes from './chat.routes.js';
+import adminChatRoutes from './admin-chat.routes.js';
+
 const router = Router();
 
 // Health Check Route
@@ -49,5 +53,12 @@ router.use('/accounts', accountRoutes);
 
 // Admin-facing endpoints: /api/v1/admin/accounts
 router.use('/admin/accounts', accountAdminRoutes);
+
+// ---> NEW MOUNT POINTS FOR LIVE CHAT <---
+// User-facing endpoints: /api/v1/chat
+router.use('/chat', chatRoutes);
+
+// Admin-facing endpoints: /api/v1/admin/chat
+router.use('/admin/chat', adminChatRoutes);
 
 export default router;  
