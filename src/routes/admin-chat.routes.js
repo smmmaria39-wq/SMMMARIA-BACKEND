@@ -15,6 +15,6 @@ router.post('/private/:userId', validate(sendMessageSchema), adminChatController
 router.put('/private/:userId/read', adminChatController.adminMarkPrivateRead);
 
 router.get('/public', adminChatController.adminGetPublicChat);
-router.delete('/public/:messageId', adminChatController.adminDeletePublicMessage);
+router.delete('/public/:messageId', adminChatController.adminDeletePublicMsg);
 
 export default router;
