@@ -39,8 +39,15 @@ const depositSchema = {
 // PesaJet Webhook — MTN/Airtel
 router.post('/webhook', pesajetWebhook);
 
-// MarzPay Webhook — Card payments
+// MarzPay Webhook — Card payments (Server-to-Server POST)
 router.post('/marzpay-webhook', marzPayWebhook);
+
+// MarzPay Webhook — Browser Redirect (GET request when user returns from MarzPay checkout)
+router.get('/marzpay-webhook', (req, res) => {
+  // Safely redirect the user's browser back to your wallet page
+  const frontendUrl = process.env.FRONTEND_URL || 'https://smmaria.site';
+  res.redirect(`${frontendUrl}/wallet.html`);
+});
 
 // User Routes
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
