@@ -8,7 +8,7 @@ import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 
 // Exchange Rate: 1 USD = 3730 UGX (You can adjust this rate in the future)
-const USD_TO_UGX_RATE = 3730;
+const USD_TO_UGX_RATE = 3930;
 
 // ==========================================
 // HELPER: Process MTN/Airtel via PesaJet API
@@ -59,6 +59,7 @@ export const createDeposit = async (req, res, next) => {
       return errorResponse(res, 'Amount must be greater than 0', 400);
     }
 
+    // TODO: Frontend currently displays a $0.05 bonus, but backend uses $0.20. Reconcile separately.
     const bonus = 0.20;
     const totalCredit = parseFloat(amount) + bonus;
     
@@ -74,21 +75,81 @@ export const createDeposit = async (req, res, next) => {
       createdAt: new Date().toISOString()
     };
 
-    // PATH 1: MANUAL UPLOAD
-    if (method === 'manual') {
-      await getRef(`payments/${paymentId}`).set(paymentData);
-      await getRef(`transactions/${paymentId}`).set({
-        id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString()
-      });
-      return successResponse(res, 'Deposit request created. Awaiting admin approval.', paymentData, 201);
-    }
-
-    // PATH 2: CARD PAYMENTS
+    // ==========================================
+    // PATH 2: CARD PAYMENTS (MARZPAY INTEGRATION)
+    // ==========================================
     if (method === 'card') {
-      return errorResponse(res, 'Card payments are temporarily disabled. Please use MTN or Airtel Mobile Money.', 400);
+      try {
+        const MARZPAY_API_URL = process.env.MARZPAY_API_URL || 'https://wallet.wearemarz.com/api/v1';
+        const MARZPAY_API_CREDENTIALS = process.env.MARZPAY_API_CREDENTIALS;
+        const MARZPAY_CALLBACK_URL = process.env.MARZPAY_CALLBACK_URL;
+
+        if (!MARZPAY_API_CREDENTIALS) {
+          throw new Error('MarzPay API credentials are not configured.');
+        }
+
+        const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
+        const marzpayReference = generateUUID();
+
+        const marzpayPayload = {
+          amount: amountInUGX,
+          method: "card",
+          reference: marzpayReference,
+          country: "UG",
+          description: "SMMMARIA Wallet Deposit",
+          callback_url: MARZPAY_CALLBACK_URL
+        };
+
+        const response = await fetch(`${MARZPAY_API_URL}/collect-money`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}`
+          },
+          body: JSON.stringify(marzpayPayload)
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || !result.data || !result.data.redirect_url) {
+          throw new Error(result.message || 'MarzPay did not return a redirect URL.');
+        }
+
+        const redirectUrl = result.data.redirect_url;
+        const marzpayTransactionId = result.data.transaction ? result.data.transaction.uuid : null;
+
+        // Save payment in Firebase as pending
+        paymentData.gateway = "marzpay";
+        paymentData.gatewayReference = marzpayReference;
+        paymentData.marzpayTransactionId = marzpayTransactionId;
+        paymentData.amountUGX = amountInUGX;
+
+        await getRef(`payments/${paymentId}`).set(paymentData);
+        await getRef(`transactions/${paymentId}`).set({
+          id: paymentId, 
+          userId, 
+          type: 'deposit', 
+          amount: totalCredit, 
+          status: 'pending', 
+          date: new Date().toISOString()
+        });
+
+        return successResponse(res, 'Card payment initiated successfully', {
+          paymentId,
+          reference: marzpayReference,
+          redirect_url: redirectUrl
+        }, 201);
+
+      } catch (apiError) {
+        paymentData.status = 'rejected';
+        paymentData.failureReason = apiError.message;
+        paymentData.gateway = "marzpay";
+        await getRef(`payments/${paymentId}`).set(paymentData);
+        return errorResponse(res, `Card payment failed: ${apiError.message}`, 400);
+      }
     }
 
-    // PATH 3: AUTOMATED API (MTN & Airtel)
+    // PATH 3: AUTOMATED API (MTN & Airtel) - UNCHANGED
     if (method === 'mtn' || method === 'airtel') {
       try {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
@@ -138,7 +199,7 @@ export const createDeposit = async (req, res, next) => {
 };
 
 // ==========================================
-// NEW: PESAJET WEBHOOK (Called by PesaJet)
+// PESAJET WEBHOOK (Called by PesaJet) - UNCHANGED
 // ==========================================
 /**
  * @desc    Webhook to receive payment status updates from PesaJet
@@ -166,7 +227,6 @@ export const pesajetWebhook = async (req, res, next) => {
       }
 
       // Check if PesaJet says it was successful
-      // (PesaJet might send 'SUCCESS', 'COMPLETED', or 'SUCCESSFUL')
       if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
         
         // 1. Update Payment Status
@@ -198,7 +258,85 @@ export const pesajetWebhook = async (req, res, next) => {
 };
 
 // ==========================================
-// NEW: CRON JOB FUNCTION (To check pending payments)
+// NEW: MARZPAY WEBHOOK (Called by MarzPay)
+// ==========================================
+/**
+ * @desc    Webhook to receive payment status updates from MarzPay
+ * @route   POST /api/v1/payments/marzpay-webhook
+ * @access  Public
+ */
+export const marzPayWebhook = async (req, res, next) => {
+  try {
+    // TODO: Add webhook signature verification once MarzPay provides official security specification.
+    const { event_type, collection } = req.body;
+    
+    if (!collection || !collection.reference) {
+      return res.status(400).send('Invalid MarzPay webhook payload: Missing collection reference.');
+    }
+
+    const reference = collection.reference;
+    
+    // Find the payment in Firebase by the gatewayReference (which we set as marzpayReference)
+    const snapshot = await getRef('payments').orderByChild('gatewayReference').equalTo(reference).get();
+    
+    if (!snapshot.exists()) {
+      logger.warn(`MarzPay Webhook: Payment not found for reference ${reference}`);
+      return res.status(200).send('Payment not found');
+    }
+
+    const paymentKey = Object.keys(snapshot.val())[0];
+    const payment = snapshot.val()[paymentKey];
+
+    // Ensure it's a MarzPay payment and not already approved
+    if (payment.gateway !== 'marzpay') {
+      return res.status(200).send('Ignored: Not a MarzPay payment');
+    }
+    if (payment.status === 'approved') {
+      return res.status(200).send('Already approved');
+    }
+
+    const isSuccess = (event_type === "collection.completed" || collection.status === "completed");
+    const isFailed = (event_type === "collection.failed" || collection.status === "failed");
+
+    if (isSuccess) {
+      // 1. Update Payment Status
+      await getRef(`payments/${paymentKey}`).update({ 
+        status: 'approved', 
+        approvedAt: new Date().toISOString(),
+        providerTransactionId: collection.provider_transaction_id || null
+      });
+      
+      // 2. Update Transaction Status
+      await getRef(`transactions/${paymentKey}`).update({ status: 'approved' });
+      
+      // 3. Atomically Credit User Wallet
+      const userBalanceRef = getRef(`users/${payment.userId}/balance`);
+      await userBalanceRef.transaction((currentBalance) => {
+        return (currentBalance || 0) + payment.totalCredit;
+      });
+
+      logger.success(`MarzPay Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
+    } else if (isFailed) {
+      // If failed
+      await getRef(`payments/${paymentKey}`).update({ 
+        status: 'rejected', 
+        failureReason: collection.status || 'Failed' 
+      });
+      await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
+      logger.warn(`MarzPay Webhook: Payment ${paymentKey} marked as ${collection.status}`);
+    } else {
+      // Pending or unknown status, do nothing yet
+      logger.info(`MarzPay Webhook: Payment ${paymentKey} status update: ${collection.status}`);
+    }
+
+    return res.status(200).send('Webhook received');
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==========================================
+// CRON JOB FUNCTION (To check pending payments) - UNCHANGED
 // ==========================================
 /**
  * @desc    Check pending PesaJet payments (Run this every 2 minutes via node-cron)
@@ -244,7 +382,7 @@ export const checkPendingPayments = async () => {
 };
 
 // ==========================================
-// ADMIN FUNCTIONS
+// ADMIN FUNCTIONS - UNCHANGED
 // ==========================================
 
 export const approvePayment = async (req, res, next) => {
