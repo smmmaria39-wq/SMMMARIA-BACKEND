@@ -7,7 +7,14 @@ import { z } from 'zod';
 import { validate } from '../middleware/validation.js';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
-import { createDeposit, approvePayment, rejectPayment, getPayments, pesajetWebhook } from '../controllers/payment.controller.js';
+import {
+  createDeposit,
+  approvePayment,
+  rejectPayment,
+  getPayments,
+  pesajetWebhook,
+  marzPayWebhook
+} from '../controllers/payment.controller.js';
 
 const router = express.Router();
 
@@ -29,8 +36,11 @@ const depositSchema = {
  })
 };
 
-// Webhook Route (Public - PesaJet calls this)
+// PesaJet Webhook — MTN/Airtel
 router.post('/webhook', pesajetWebhook);
+
+// MarzPay Webhook — Card payments
+router.post('/marzpay-webhook', marzPayWebhook);
 
 // User Routes
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
