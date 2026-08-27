@@ -109,3 +109,74 @@ export const generateApiKey = async (req, res, next) => {
   next(error);
  }
 };
+/**
+ * @desc    Delete user account and move data to deletedAccounts for security
+ * @route   DELETE /api/v1/users/me
+ * @access  Private
+ */
+export const deleteAccount = async (req, res, next) => {
+ try {
+  const userId = req.user.id;
+  
+  // 1. Fetch the user's main profile data
+  const userSnapshot = await getRef(`users/${userId}`).get();
+  if (!userSnapshot.exists()) {
+   return errorResponse(res, 'User not found', 404);
+  }
+  
+  // Prepare the object to be saved in the deletedAccounts node
+  const deletedAccountData = {
+   ...userSnapshot.val(),
+   deletedAt: new Date().toISOString(),
+   transactions: {},
+   orders: {},
+   tickets: {}
+  };
+  
+  // We will use a multi-path update to save the backup and delete active data atomically
+  const updates = {};
+  
+  // 2. Fetch and move Transactions
+  const txSnapshot = await getRef('transactions').orderByChild('userId').equalTo(userId).get();
+  if (txSnapshot.exists()) {
+   txSnapshot.forEach(child => {
+    const key = child.key;
+    deletedAccountData.transactions[key] = child.val();
+    updates[`transactions/${key}`] = null; // Mark for deletion
+   });
+  }
+  
+  // 3. Fetch and move Orders
+  const ordersSnapshot = await getRef('orders').orderByChild('userId').equalTo(userId).get();
+  if (ordersSnapshot.exists()) {
+   ordersSnapshot.forEach(child => {
+    const key = child.key;
+    deletedAccountData.orders[key] = child.val();
+    updates[`orders/${key}`] = null; // Mark for deletion
+   });
+  }
+  
+  // 4. Fetch and move Tickets
+  const ticketsSnapshot = await getRef('tickets').orderByChild('userId').equalTo(userId).get();
+  if (ticketsSnapshot.exists()) {
+   ticketsSnapshot.forEach(child => {
+    const key = child.key;
+    deletedAccountData.tickets[key] = child.val();
+    updates[`tickets/${key}`] = null; // Mark for deletion
+   });
+  }
+  
+  // 5. Save the backed-up data to deletedAccounts node
+  updates[`deletedAccounts/${userId}`] = deletedAccountData;
+  
+  // 6. Delete the user record itself from the active users node
+  updates[`users/${userId}`] = null;
+  
+  // Execute the multi-path update atomically
+  await getRef().update(updates);
+  
+  return successResponse(res, 'Account deleted successfully');
+ } catch (error) {
+  next(error);
+ }
+};
