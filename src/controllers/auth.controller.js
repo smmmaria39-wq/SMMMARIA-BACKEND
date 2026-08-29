@@ -168,30 +168,51 @@ export const loginUser = async (req, res, next) => {
 };
 
 /**
- * @desc    Login or Register via Google Account
+ * @desc    Login or Register via Google Account (OAuth 2.0 Code Flow)
  * @route   POST /api/v1/auth/google
  * @access  Public
  */
 export const googleAuth = async (req, res, next) => {
  try {
-  const { credential } = req.body;
+  const { code } = req.body; // Changed from 'credential' to 'code'
   
-  if (!credential) {
-   return errorResponse(res, 'Google credential is missing', 400);
+  if (!code) {
+   return errorResponse(res, 'Google authorization code is missing', 400);
   }
-
-  const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+  
+  // 1. Exchange the authorization code for Google tokens
+  const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+   method: 'POST',
+   headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+   body: new URLSearchParams({
+    code: code,
+    client_id: process.env.GOOGLE_CLIENT_ID || '354475709339-2g48o0nrugv0f1kg9n4nbn798c9upaud.apps.googleusercontent.com',
+    client_secret: process.env.GOOGLE_CLIENT_SECRET, // You MUST add this to Railway env variables
+    redirect_uri: 'postmessage', // Required by Google for popup JS flow
+    grant_type: 'authorization_code'
+   })
+  });
+  
+  const tokens = await tokenResponse.json();
+  
+  if (tokens.error || !tokens.id_token) {
+   return errorResponse(res, 'Failed to exchange Google authorization code', 401);
+  }
+  
+  // 2. Verify the ID token to get user details
+  const googleRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${tokens.id_token}`);
   const payload = await googleRes.json();
-
+  
   if (payload.error || !payload.email) {
    return errorResponse(res, 'Invalid Google token', 401);
   }
-
+  
   const { email, name, sub: googleId } = payload;
-
+  
+  // 3. Find or Create the user in Firebase
   let snapshot = await getRef('users').orderByChild('email').equalTo(email).get();
   let user = snapshot.exists() ? Object.values(snapshot.val())[0] : null;
-
+  
   if (!user) {
    const userId = generateUUID();
    const username = email.split('@')[0] + Math.floor(Math.random() * 100);
@@ -216,16 +237,17 @@ export const googleAuth = async (req, res, next) => {
     createdAt: new Date().toISOString(),
     lastLogin: new Date().toISOString()
    };
-
+   
    await getRef(`users/${userId}`).set(user);
    logger.success(`New user registered via Google: ${email}`);
   } else {
    await getRef(`users/${user.id}/lastLogin`).set(new Date().toISOString());
   }
-
+  
+  // 4. Generate your app's JWT and return it
   const token = generateToken({ id: user.id, role: user.role });
   delete user.password;
-
+  
   return successResponse(res, 'Google authentication successful', { token, user });
  } catch (error) {
   next(error);
