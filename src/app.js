@@ -25,9 +25,9 @@ app.use(helmet());
 const corsOptions = {
  origin: [
   'https://smmaria.netlify.app', // Your main user frontend
-  'https://smmaria2.site.je', // Your test user frontend
-  'https://smmaria.site',    // Your main user frontend
-  'http://adminmaria.gt.tc',
+  'https://mmaccounts.store', // Your test user frontend
+  'https://smmaria.site',    // Your main user frontend 
+  'https://adminmaria.gt.tc',
   'https://mmaccounts.store' // Your admin frontend
  ],
  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
