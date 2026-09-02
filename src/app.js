@@ -28,7 +28,7 @@ const corsOptions = {
   'https://smmaria2.site.je', // Your test user frontend
   'https://smmaria.site',    // Your main user frontend
   'http://adminmaria.gt.tc',
-  'https://adminsmm1.netlify.app' // Your admin frontend
+  'https://markmellon3.github.io/Maria' // Your admin frontend
  ],
  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
  allowedHeaders: ['Content-Type', 'Authorization', 'X-Panel-Domain'],
