@@ -102,17 +102,36 @@ export const createDeposit = async (req, res, next) => {
       const fiveMinsAgo = Date.now() - (5 * 60 * 1000);
       
       let hasRecentPending = false;
+      const updates = {};
+      
       if (userPaymentsSnap.exists()) {
         const userPayments = Object.values(userPaymentsSnap.val());
-        hasRecentPending = userPayments.some(p => 
-          p.status === 'pending' && 
-          (p.method === 'mtn' || p.method === 'airtel') &&
-          new Date(p.createdAt).getTime() > fiveMinsAgo
-        );
+        
+        userPayments.forEach(p => {
+          if (p.status === 'pending' && (p.method === 'mtn' || p.method === 'airtel')) {
+            const createdAtTime = new Date(p.createdAt).getTime();
+            
+            if (createdAtTime > fiveMinsAgo) {
+              // It's less than 5 minutes old, block the new deposit
+              hasRecentPending = true;
+            } else {
+              // It's older than 5 minutes, automatically cancel it so they can try again
+              updates[`payments/${p.id}/status`] = 'cancelled';
+              updates[`payments/${p.id}/failureReason`] = 'Timed out (older than 5 mins)';
+              updates[`payments/${p.id}/cancelledAt`] = new Date().toISOString();
+              updates[`transactions/${p.id}/status`] = 'cancelled';
+            }
+          }
+        });
+        
+        // Apply the cancellations to the database
+        if (Object.keys(updates).length > 0) {
+          await getRef().update(updates);
+        }
       }
       
       if (hasRecentPending) {
-        return errorResponse(res, 'You already have a pending Mobile Money deposit. Please approve the prompt on your phone or wait 5 minutes before trying again.', 400);
+        return errorResponse(res, 'You already have a pending Mobile Money deposit. Please wait 5 minutes for it to expire, or use the Cancel button on the wallet page.', 400);
       }
     }
 
@@ -214,7 +233,7 @@ export const createDeposit = async (req, res, next) => {
           amount: amountInUGX, 
           currency: "UGX",
           phoneNumber: formattedPhone,
-          provider: method 
+          provider: method.toUpperCase() // FIX: Send 'MTN' and 'AIRTEL' in uppercase
         };
 
         const gatewayResponse = await processPesaJetPayment(gatewayPayload);
@@ -264,7 +283,6 @@ export const pesajetWebhook = async (req, res, next) => {
         const credited = await processPaymentApproval(paymentKey, payment);
         if (credited) logger.success(`Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
       } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED' || status === 'EXPIRED') {
-        // Safely reject only if it's an actual failure, not just "PENDING"
         await getRef(`payments/${paymentKey}`).update({ status: 'rejected', failureReason: status });
         await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
         logger.warn(`Webhook: Payment ${paymentKey} marked as ${status}`);
@@ -345,7 +363,6 @@ export const checkPendingPayments = async () => {
           const credited = await processPaymentApproval(payment.id, payment);
           if (credited) logger.success(`Cron Job: Auto-approved pending payment ${payment.id}`);
         } else if (result.status === 'FAILED' || result.status === 'EXPIRED' || result.status === 'CANCELLED') {
-          // Clean up stuck pending payments so the user isn't blocked forever
           await getRef(`payments/${payment.id}`).update({ status: 'rejected', failureReason: result.status });
           await getRef(`transactions/${payment.id}`).update({ status: 'rejected' });
           logger.warn(`Cron Job: Rejected expired/failed payment ${payment.id}`);
@@ -453,6 +470,9 @@ export const cancelPendingDeposit = async (req, res, next) => {
   }
 };
 
+// ==========================================
+// GET PAYMENTS
+// ==========================================
 export const getPayments = async (req, res, next) => {
   try {
     const snapshot = await getRef('payments').get();
