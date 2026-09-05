@@ -13,7 +13,8 @@ import {
   rejectPayment,
   getPayments,
   pesajetWebhook,
-  marzPayWebhook
+  marzPayWebhook,
+  cancelPendingDeposit // <-- ADDED THIS IMPORT
 } from '../controllers/payment.controller.js';
 
 const router = express.Router();
@@ -51,7 +52,7 @@ router.get('/marzpay-webhook', (req, res) => {
 
 // User Routes
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
-router.post('/cancel', protect, cancelPendingDeposit); // <-- ADD THIS LINE
+router.post('/cancel', protect, cancelPendingDeposit); 
 router.get('/', protect, getPayments);
 
 // Admin Routes
