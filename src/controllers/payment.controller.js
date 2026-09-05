@@ -7,7 +7,7 @@ import { generateUUID } from '../utils/helpers.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 
-// Exchange Rate: 1 USD = 3930 UGX (Updated rate from your code)
+// Exchange Rate: 1 USD = 3930 UGX (Updated rate)
 const USD_TO_UGX_RATE = 3930;
 
 // ==========================================
@@ -20,8 +20,6 @@ const processPesaJetPayment = async (payload) => {
   if (!PESAJET_API_KEY) {
     throw new Error('PesaJet API key is not configured in Railway.');
   }
-
-  console.log("Sending to PesaJet:", JSON.stringify(payload));
 
   const response = await fetch(PESAJET_API_URL, {
     method: 'POST',
@@ -51,37 +49,32 @@ const processPesaJetPayment = async (payload) => {
 const processPaymentApproval = async (paymentKey, paymentData, extraUpdates = {}) => {
   const paymentRef = getRef(`payments/${paymentKey}`);
   
-  // 1. Atomically lock the payment from 'pending' to 'approved'
   const result = await paymentRef.transaction((currentPayment) => {
     if (currentPayment && currentPayment.status === 'pending') {
       currentPayment.status = 'approved';
       currentPayment.approvedAt = new Date().toISOString();
       
-      // Merge any extra fields (e.g., providerTransactionId for MarzPay)
       for (const key in extraUpdates) {
         currentPayment[key] = extraUpdates[key];
       }
       
-      return currentPayment; // Commit transaction
+      return currentPayment; 
     }
-    return; // Abort transaction if not pending (already processed)
+    return; 
   });
 
-  // If the transaction did not commit, it means another process already approved it
   if (!result.committed) {
     return false; 
   }
 
-  // 2. If we successfully locked the approval, update the transaction record
   await getRef(`transactions/${paymentKey}`).update({ status: 'approved' });
   
-  // 3. Atomically Credit User Wallet
   const userBalanceRef = getRef(`users/${paymentData.userId}/balance`);
   await userBalanceRef.transaction((currentBalance) => {
     return (currentBalance || 0) + paymentData.totalCredit;
   });
 
-  return true; // Credited successfully
+  return true; 
 };
 
 /**
@@ -98,10 +91,31 @@ export const createDeposit = async (req, res, next) => {
       return errorResponse(res, 'Amount must be greater than 0', 400);
     }
 
-    // TODO: Frontend currently displays a $0.05 bonus, but backend uses $0.20. Reconcile separately.
-    const bonus = 0.05;
+    const bonus = 0.20;
     const totalCredit = parseFloat(amount) + bonus;
     
+    // ==========================================
+    // ANTI-DOUBLE SUBMISSION CHECK (MTN/AIRTEL)
+    // ==========================================
+    if (method === 'mtn' || method === 'airtel') {
+      const userPaymentsSnap = await getRef('payments').orderByChild('userId').equalTo(userId).get();
+      const fiveMinsAgo = Date.now() - (5 * 60 * 1000);
+      
+      let hasRecentPending = false;
+      if (userPaymentsSnap.exists()) {
+        const userPayments = Object.values(userPaymentsSnap.val());
+        hasRecentPending = userPayments.some(p => 
+          p.status === 'pending' && 
+          (p.method === 'mtn' || p.method === 'airtel') &&
+          new Date(p.createdAt).getTime() > fiveMinsAgo
+        );
+      }
+      
+      if (hasRecentPending) {
+        return errorResponse(res, 'You already have a pending Mobile Money deposit. Please approve the prompt on your phone or wait 5 minutes before trying again.', 400);
+      }
+    }
+
     const paymentId = generateUUID();
     const paymentData = {
       id: paymentId,
@@ -114,9 +128,7 @@ export const createDeposit = async (req, res, next) => {
       createdAt: new Date().toISOString()
     };
 
-    // ==========================================
     // PATH 2: CARD PAYMENTS (MARZPAY INTEGRATION)
-    // ==========================================
     if (method === 'card') {
       try {
         const MARZPAY_API_URL = process.env.MARZPAY_API_URL || 'https://wallet.wearemarz.com/api/v1';
@@ -157,7 +169,6 @@ export const createDeposit = async (req, res, next) => {
         const redirectUrl = result.data.redirect_url;
         const marzpayTransactionId = result.data.transaction ? result.data.transaction.uuid : null;
 
-        // Save payment in Firebase as pending
         paymentData.gateway = "marzpay";
         paymentData.gatewayReference = marzpayReference;
         paymentData.marzpayTransactionId = marzpayTransactionId;
@@ -165,12 +176,7 @@ export const createDeposit = async (req, res, next) => {
 
         await getRef(`payments/${paymentId}`).set(paymentData);
         await getRef(`transactions/${paymentId}`).set({
-          id: paymentId, 
-          userId, 
-          type: 'deposit', 
-          amount: totalCredit, 
-          status: 'pending', 
-          date: new Date().toISOString()
+          id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString()
         });
 
         return successResponse(res, 'Card payment initiated successfully', {
@@ -188,7 +194,7 @@ export const createDeposit = async (req, res, next) => {
       }
     }
 
-    // PATH 3: AUTOMATED API (MTN & Airtel) - UNCHANGED
+    // PATH 3: AUTOMATED API (MTN & Airtel)
     if (method === 'mtn' || method === 'airtel') {
       try {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
@@ -238,7 +244,7 @@ export const createDeposit = async (req, res, next) => {
 };
 
 // ==========================================
-// PESAJET WEBHOOK (Called by PesaJet) - UNCHANGED LOGIC, ADDED ATOMIC PROTECTION
+// PESAJET WEBHOOK 
 // ==========================================
 export const pesajetWebhook = async (req, res, next) => {
   try {
@@ -256,13 +262,9 @@ export const pesajetWebhook = async (req, res, next) => {
 
       if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
         const credited = await processPaymentApproval(paymentKey, payment);
-        if (credited) {
-          logger.success(`Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
-        } else {
-          logger.info(`Webhook: Payment ${paymentKey} was already processed.`);
-        }
-      } else {
-        // If failed or canceled
+        if (credited) logger.success(`Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
+      } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'REJECTED' || status === 'EXPIRED') {
+        // Safely reject only if it's an actual failure, not just "PENDING"
         await getRef(`payments/${paymentKey}`).update({ status: 'rejected', failureReason: status });
         await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
         logger.warn(`Webhook: Payment ${paymentKey} marked as ${status}`);
@@ -276,7 +278,7 @@ export const pesajetWebhook = async (req, res, next) => {
 };
 
 // ==========================================
-// MARZPAY WEBHOOK (Called by MarzPay) - UNCHANGED LOGIC, ADDED ATOMIC PROTECTION
+// MARZPAY WEBHOOK 
 // ==========================================
 export const marzPayWebhook = async (req, res, next) => {
   try {
@@ -297,32 +299,19 @@ export const marzPayWebhook = async (req, res, next) => {
     const paymentKey = Object.keys(snapshot.val())[0];
     const payment = snapshot.val()[paymentKey];
 
-    if (payment.gateway !== 'marzpay') {
-      return res.status(200).send('Ignored: Not a MarzPay payment');
-    }
+    if (payment.gateway !== 'marzpay') return res.status(200).send('Ignored: Not a MarzPay payment');
 
     const isSuccess = (event_type === "collection.completed" || collection.status === "completed");
     const isFailed = (event_type === "collection.failed" || collection.status === "failed");
 
     if (isSuccess) {
-      const extraUpdates = {
-        providerTransactionId: collection.provider_transaction_id || null
-      };
+      const extraUpdates = { providerTransactionId: collection.provider_transaction_id || null };
       const credited = await processPaymentApproval(paymentKey, payment, extraUpdates);
-      if (credited) {
-        logger.success(`MarzPay Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
-      } else {
-        logger.info(`MarzPay Webhook: Payment ${paymentKey} was already processed.`);
-      }
+      if (credited) logger.success(`MarzPay Webhook: Payment ${paymentKey} approved automatically. Credited $${payment.totalCredit}`);
     } else if (isFailed) {
-      await getRef(`payments/${paymentKey}`).update({ 
-        status: 'rejected', 
-        failureReason: collection.status || 'Failed' 
-      });
+      await getRef(`payments/${paymentKey}`).update({ status: 'rejected', failureReason: collection.status || 'Failed' });
       await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
       logger.warn(`MarzPay Webhook: Payment ${paymentKey} marked as ${collection.status}`);
-    } else {
-      logger.info(`MarzPay Webhook: Payment ${paymentKey} status update: ${collection.status}`);
     }
 
     return res.status(200).send('Webhook received');
@@ -332,7 +321,7 @@ export const marzPayWebhook = async (req, res, next) => {
 };
 
 // ==========================================
-// CRON JOB FUNCTION - UNCHANGED LOGIC, ADDED ATOMIC PROTECTION
+// CRON JOB FUNCTION 
 // ==========================================
 export const checkPendingPayments = async () => {
   try {
@@ -354,9 +343,12 @@ export const checkPendingPayments = async () => {
 
         if (result.status === 'SUCCESS' || result.status === 'COMPLETED' || result.status === 'SUCCESSFUL') {
           const credited = await processPaymentApproval(payment.id, payment);
-          if (credited) {
-            logger.success(`Cron Job: Auto-approved pending payment ${payment.id}`);
-          }
+          if (credited) logger.success(`Cron Job: Auto-approved pending payment ${payment.id}`);
+        } else if (result.status === 'FAILED' || result.status === 'EXPIRED' || result.status === 'CANCELLED') {
+          // Clean up stuck pending payments so the user isn't blocked forever
+          await getRef(`payments/${payment.id}`).update({ status: 'rejected', failureReason: result.status });
+          await getRef(`transactions/${payment.id}`).update({ status: 'rejected' });
+          logger.warn(`Cron Job: Rejected expired/failed payment ${payment.id}`);
         }
       }
     }
@@ -366,9 +358,8 @@ export const checkPendingPayments = async () => {
 };
 
 // ==========================================
-// ADMIN FUNCTIONS - UNCHANGED LOGIC, ADDED ATOMIC PROTECTION
+// ADMIN FUNCTIONS 
 // ==========================================
-
 export const approvePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -381,10 +372,7 @@ export const approvePayment = async (req, res, next) => {
     if (payment.status === 'approved') return errorResponse(res, 'Payment already approved', 400);
     
     const credited = await processPaymentApproval(id, payment);
-    if (!credited) {
-      // Race condition: it was pending when we checked, but a webhook/cron approved it during the transaction
-      return errorResponse(res, 'Payment already approved automatically', 400);
-    }
+    if (!credited) return errorResponse(res, 'Payment already approved automatically', 400);
     
     return successResponse(res, 'Payment approved and wallet credited successfully');
   } catch (error) {
