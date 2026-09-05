@@ -51,6 +51,7 @@ router.get('/marzpay-webhook', (req, res) => {
 
 // User Routes
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
+router.post('/cancel', protect, cancelPendingDeposit); // <-- ADD THIS LINE
 router.get('/', protect, getPayments);
 
 // Admin Routes
