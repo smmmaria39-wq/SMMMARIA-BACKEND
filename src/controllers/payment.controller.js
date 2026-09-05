@@ -233,7 +233,7 @@ export const createDeposit = async (req, res, next) => {
           amount: amountInUGX, 
           currency: "UGX",
           phoneNumber: formattedPhone,
-          provider: method.toUpperCase() // FIX: Send 'MTN' and 'AIRTEL' in uppercase
+          provider: method // FIX: Reverted to lowercase 'mtn' or 'airtel' as PesaJet requires
         };
 
         const gatewayResponse = await processPesaJetPayment(gatewayPayload);
