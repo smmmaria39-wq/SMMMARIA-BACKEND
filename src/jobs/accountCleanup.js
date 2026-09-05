@@ -1,5 +1,5 @@
 // ===============================================
-// Account Cleanup Cron Job
+// Account Cleanup Cron Job (Optimized)
 // ===============================================
 
 import cron from 'node-cron';
@@ -12,9 +12,11 @@ export const startAccountCleanupJob = () => {
     logger.info('[Cron] Running account cleanup job...');
     
     try {
-      const snapshot = await getRef('accountInventory').get();
+      // OPTIMIZATION: Only fetch accounts that are currently 'reserved'
+      const snapshot = await getRef('accountInventory').orderByChild('status').equalTo('reserved').get();
+      
       if (!snapshot.exists()) {
-        logger.info('[Cron] Account cleanup finished. No inventory found.');
+        logger.info('[Cron] Account cleanup finished. No stuck accounts found.');
         return;
       }
 
@@ -27,14 +29,12 @@ export const startAccountCleanupJob = () => {
         const account = childSnapshot.val();
         const accountId = childSnapshot.key;
 
-        // If account is reserved and the reservation is older than 10 minutes
-        if (account.status === 'reserved' && account.reservedAt) {
-          if (now - account.reservedAt > tenMinutes) {
-            updates[`accountInventory/${accountId}/status`] = 'available';
-            updates[`accountInventory/${accountId}/reservedAt`] = null;
-            updates[`accountInventory/${accountId}/reservedBy`] = null;
-            cleanedCount++;
-          }
+        // If the reservation is older than 10 minutes
+        if (account.reservedAt && (now - account.reservedAt > tenMinutes)) {
+          updates[`accountInventory/${accountId}/status`] = 'available';
+          updates[`accountInventory/${accountId}/reservedAt`] = null;
+          updates[`accountInventory/${accountId}/reservedBy`] = null;
+          cleanedCount++;
         }
       });
 
@@ -42,7 +42,7 @@ export const startAccountCleanupJob = () => {
         await getRef('/').update(updates);
         logger.info(`🧹 [Cron] Account Cleanup: Reverted ${cleanedCount} abandoned reserved accounts to available.`);
       } else {
-        logger.info('[Cron] Account cleanup finished. No stuck accounts found.');
+        logger.info('[Cron] Account cleanup finished. No stuck accounts older than 10 minutes found.');
       }
     } catch (error) {
       logger.error(`[Cron] Account Cleanup Job Error: ${error.message}`);
