@@ -99,7 +99,7 @@ export const createDeposit = async (req, res, next) => {
     }
 
     // TODO: Frontend currently displays a $0.05 bonus, but backend uses $0.20. Reconcile separately.
-    const bonus = 0.20;
+    const bonus = 0.05;
     const totalCredit = parseFloat(amount) + bonus;
     
     const paymentId = generateUUID();
