@@ -397,6 +397,62 @@ export const rejectPayment = async (req, res, next) => {
   }
 };
 
+// ==========================================
+// USER CANCEL PENDING DEPOSIT
+// ==========================================
+export const cancelPendingDeposit = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    
+    // Find any pending MTN/Airtel payments for this user
+    const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
+    
+    if (!snapshot.exists()) {
+      return errorResponse(res, 'No pending deposits found to cancel.', 404);
+    }
+
+    const userPayments = snapshot.val();
+    let cancelledCount = 0;
+    const updates = {};
+    const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/transactions';
+    const PESAJET_API_KEY = process.env.PESAJET_API_KEY;
+
+    for (const key in userPayments) {
+      const payment = userPayments[key];
+      if (payment.status === 'pending' && (payment.method === 'mtn' || payment.method === 'airtel')) {
+        
+        // 1. Attempt to cancel on PesaJet side to stop the phone prompts
+        if (payment.gatewayReference && payment.gatewayReference !== 'N/A' && PESAJET_API_KEY) {
+          try {
+            await fetch(`${PESAJET_API_URL}/${payment.gatewayReference}/cancel`, {
+              method: 'POST',
+              headers: { 'X-API-KEY': PESAJET_API_KEY }
+            });
+          } catch (e) {
+            // Ignore if PesaJet cancel fails, we still mark as cancelled locally
+          }
+        }
+        
+        // 2. Mark as cancelled in our database
+        updates[`payments/${key}/status`] = 'cancelled';
+        updates[`payments/${key}/failureReason`] = 'Cancelled by user';
+        updates[`payments/${key}/cancelledAt`] = new Date().toISOString();
+        updates[`transactions/${key}/status`] = 'cancelled';
+        cancelledCount++;
+      }
+    }
+
+    if (cancelledCount > 0) {
+      await getRef().update(updates);
+      return successResponse(res, 'Pending deposit cancelled successfully. You can try again now.');
+    } else {
+      return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getPayments = async (req, res, next) => {
   try {
     const snapshot = await getRef('payments').get();
@@ -421,45 +477,6 @@ export const getPayments = async (req, res, next) => {
     }
     
     return successResponse(res, 'Payments fetched successfully', payments);
-  } catch (error) {
-    next(error);
-  }
-}; 
-// ==========================================
-// USER CANCEL PENDING DEPOSIT
-// ==========================================
-export const cancelPendingDeposit = async (req, res, next) => {
-  try {
-    const userId = req.user.id;
-    
-    // Find any pending MTN/Airtel payments for this user
-    const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
-    
-    if (!snapshot.exists()) {
-      return errorResponse(res, 'No pending deposits found to cancel.', 404);
-    }
-
-    const userPayments = snapshot.val();
-    let cancelledCount = 0;
-    const updates = {};
-
-    for (const key in userPayments) {
-      const payment = userPayments[key];
-      if (payment.status === 'pending' && (payment.method === 'mtn' || payment.method === 'airtel')) {
-        updates[`payments/${key}/status`] = 'cancelled';
-        updates[`payments/${key}/failureReason`] = 'Cancelled by user';
-        updates[`payments/${key}/cancelledAt`] = new Date().toISOString();
-        updates[`transactions/${key}/status`] = 'cancelled';
-        cancelledCount++;
-      }
-    }
-
-    if (cancelledCount > 0) {
-      await getRef().update(updates);
-      return successResponse(res, 'Pending deposit cancelled successfully. You can try again now.');
-    } else {
-      return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
-    }
   } catch (error) {
     next(error);
   }
