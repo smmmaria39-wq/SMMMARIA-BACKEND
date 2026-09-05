@@ -109,8 +109,10 @@ class AccountService {
 
     const accountData = reserveResult.snapshot.val();
     
-    const followersCount = parseInt(accountData.followers) || 0;
-    const actualPrice = (followersCount / 1000) * 10;
+    // =========================================================
+    // FIX: Use the exact price set by the Admin in the database
+    // =========================================================
+    const actualPrice = parseFloat(accountData.price) || 0;
 
     try {
       // Phase 2: Atomically verify and debit wallet
@@ -145,7 +147,6 @@ class AccountService {
       const updates = {};
       
       updates[`accountInventory/${accountId}/status`] = 'sold';
-      updates[`accountInventory/${accountId}/price`] = actualPrice; 
       updates[`accountInventory/${accountId}/soldAt`] = Date.now();
       updates[`accountInventory/${accountId}/soldTo`] = userId;
       updates[`accountInventory/${accountId}/purchaseId`] = purchaseId;
