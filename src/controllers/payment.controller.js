@@ -229,15 +229,33 @@ export const createDeposit = async (req, res, next) => {
           type: "COLLECTION", 
           amount: amountInUGX, 
           currency: "UGX",
-          phoneNumber: formattedPhone, // FIXED: No '+' sign
-          provider: method, // 'mtn' or 'airtel' in lowercase
-          reference: paymentId, // ADDED: Transaction reference
-          description: "SMMMARIA Wallet Deposit" // ADDED: Description
+          phoneNumber: formattedPhone, 
+          provider: method, 
+          reference: paymentId.replace(/-/g, ''), // FIX: Remove hyphens for clean UUID
+          description: "SMMMARIA Wallet Deposit"
         };
 
-        const gatewayResponse = await processPesaJetPayment(gatewayPayload);
-        
-        paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.id || 'N/A';
+        let gatewayResponse;
+        try {
+            gatewayResponse = await processPesaJetPayment(gatewayPayload);
+            paymentData.gatewayReference = gatewayResponse.transactionId || gatewayResponse.id || gatewayPayload.reference;
+        } catch (apiError) {
+            // FIX: Handle PesaJet "Transaction state is ambiguous" error
+            if (apiError.message.includes('Transaction state is ambiguous') || apiError.message.includes('system will poll for status')) {
+                // Airtel accepted the request but hasn't sent the prompt yet. Keep it PENDING.
+                paymentData.gatewayReference = gatewayPayload.reference; // Use our reference for polling
+                paymentData.status = 'pending';
+                
+                await getRef(`payments/${paymentId}`).set(paymentData);
+                await getRef(`transactions/${paymentId}`).set({
+                  id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString()
+                });
+
+                return successResponse(res, 'Payment request sent. Please approve the prompt on your phone. Waiting for confirmation...', { status: 'pending', ...paymentData }, 201);
+            }
+            // If it's a real error, rethrow it to the outer catch block
+            throw apiError;
+        }
         
         await getRef(`payments/${paymentId}`).set(paymentData);
         await getRef(`transactions/${paymentId}`).set({
