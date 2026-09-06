@@ -112,10 +112,8 @@ export const createDeposit = async (req, res, next) => {
             const createdAtTime = new Date(p.createdAt).getTime();
             
             if (createdAtTime > fiveMinsAgo) {
-              // It's less than 5 minutes old, block the new deposit
               hasRecentPending = true;
             } else {
-              // It's older than 5 minutes, automatically cancel it so they can try again
               updates[`payments/${p.id}/status`] = 'cancelled';
               updates[`payments/${p.id}/failureReason`] = 'Timed out (older than 5 mins)';
               updates[`payments/${p.id}/cancelledAt`] = new Date().toISOString();
@@ -124,7 +122,6 @@ export const createDeposit = async (req, res, next) => {
           }
         });
         
-        // Apply the cancellations to the database
         if (Object.keys(updates).length > 0) {
           await getRef().update(updates);
         }
@@ -220,20 +217,22 @@ export const createDeposit = async (req, res, next) => {
         
         const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
         
+        // FIX: Remove the '+' sign. PesaJet/MTN/Airtel require '2567XXXXXXXX' without the '+'.
         let formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
         if (formattedPhone.startsWith('0')) {
           formattedPhone = '256' + formattedPhone.substring(1);
         } else if (!formattedPhone.startsWith('256')) {
           formattedPhone = '256' + formattedPhone;
         }
-        formattedPhone = '+' + formattedPhone;
 
         let gatewayPayload = { 
           type: "COLLECTION", 
           amount: amountInUGX, 
           currency: "UGX",
-          phoneNumber: formattedPhone,
-          provider: method // FIX: Reverted to lowercase 'mtn' or 'airtel' as PesaJet requires
+          phoneNumber: formattedPhone, // FIXED: No '+' sign
+          provider: method, // 'mtn' or 'airtel' in lowercase
+          reference: paymentId, // ADDED: Transaction reference
+          description: "SMMMARIA Wallet Deposit" // ADDED: Description
         };
 
         const gatewayResponse = await processPesaJetPayment(gatewayPayload);
@@ -421,7 +420,6 @@ export const cancelPendingDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
     
-    // Find any pending MTN/Airtel payments for this user
     const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
     
     if (!snapshot.exists()) {
@@ -438,19 +436,15 @@ export const cancelPendingDeposit = async (req, res, next) => {
       const payment = userPayments[key];
       if (payment.status === 'pending' && (payment.method === 'mtn' || payment.method === 'airtel')) {
         
-        // 1. Attempt to cancel on PesaJet side to stop the phone prompts
         if (payment.gatewayReference && payment.gatewayReference !== 'N/A' && PESAJET_API_KEY) {
           try {
             await fetch(`${PESAJET_API_URL}/${payment.gatewayReference}/cancel`, {
               method: 'POST',
               headers: { 'X-API-KEY': PESAJET_API_KEY }
             });
-          } catch (e) {
-            // Ignore if PesaJet cancel fails, we still mark as cancelled locally
-          }
+          } catch (e) {}
         }
         
-        // 2. Mark as cancelled in our database
         updates[`payments/${key}/status`] = 'cancelled';
         updates[`payments/${key}/failureReason`] = 'Cancelled by user';
         updates[`payments/${key}/cancelledAt`] = new Date().toISOString();
