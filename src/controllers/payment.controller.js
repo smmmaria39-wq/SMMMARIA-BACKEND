@@ -358,13 +358,15 @@ export const checkPendingPayments = async () => {
         });
         const result = await response.json();
 
+        // ONLY APPROVE if successful. 
+        // Do NOT reject if failed. Let the webhook handle the rejection, 
+        // or let the 5-minute anti-double submission timer cancel it.
         if (result.status === 'SUCCESS' || result.status === 'COMPLETED' || result.status === 'SUCCESSFUL') {
           const credited = await processPaymentApproval(payment.id, payment);
           if (credited) logger.success(`Cron Job: Auto-approved pending payment ${payment.id}`);
-        } else if (result.status === 'FAILED' || result.status === 'EXPIRED' || result.status === 'CANCELLED') {
-          await getRef(`payments/${payment.id}`).update({ status: 'rejected', failureReason: result.status });
-          await getRef(`transactions/${payment.id}`).update({ status: 'rejected' });
-          logger.warn(`Cron Job: Rejected expired/failed payment ${payment.id}`);
+        } else {
+          // It's still pending or processing. Just log it and leave it alone.
+          logger.info(`Cron Job: Payment ${payment.id} still pending on PesaJet (Status: ${result.status || 'Unknown'}). Waiting for webhook or user PIN.`);
         }
       }
     }
