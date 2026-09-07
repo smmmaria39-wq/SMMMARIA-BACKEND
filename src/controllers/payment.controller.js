@@ -210,20 +210,21 @@ export const createDeposit = async (req, res, next) => {
       }
     }
 
-    // PATH 3: AUTOMATED API (MTN & Airtel)
+     // PATH 3: AUTOMATED API (MTN & Airtel)
     if (method === 'mtn' || method === 'airtel') {
       try {
         if (!phoneNumber) return errorResponse(res, 'Phone number is required', 400);
         
         const amountInUGX = Math.round(parseFloat(amount) * USD_TO_UGX_RATE);
         
-        // FIX: Remove the '+' sign. PesaJet/MTN/Airtel require '2567XXXXXXXX' without the '+'.
+        // FIX: Format phone number to +256XXXXXXXXX (PesaJet requires the + sign)
         let formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
         if (formattedPhone.startsWith('0')) {
           formattedPhone = '256' + formattedPhone.substring(1);
         } else if (!formattedPhone.startsWith('256')) {
           formattedPhone = '256' + formattedPhone;
         }
+        formattedPhone = '+' + formattedPhone; // Add the + sign back
 
         let gatewayPayload = { 
           type: "COLLECTION", 
@@ -231,8 +232,8 @@ export const createDeposit = async (req, res, next) => {
           currency: "UGX",
           phoneNumber: formattedPhone, 
           provider: method, 
-          reference: paymentId.replace(/-/g, ''), // FIX: Remove hyphens for clean UUID
-          description: "SMMMARIA Wallet Deposit"
+          reference: paymentId.replace(/-/g, '') // FIX: Remove hyphens for clean UUID
+          // description field removed as requested
         };
 
         let gatewayResponse;
