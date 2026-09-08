@@ -52,7 +52,7 @@ export const createDeposit = async (req, res, next) => {
       return errorResponse(res, 'Amount must be a valid number greater than 0', 400);
     }
 
-    const bonus = 0.20;
+    const bonus = 0.05;
     const totalCredit = parseFloat(parsedAmount) + bonus;
     
     // ==========================================
@@ -76,7 +76,7 @@ export const createDeposit = async (req, res, next) => {
     const paymentId = generateUUID();
     const amountInUGX = Math.round(parsedAmount * USD_TO_UGX_RATE);
     
-    // Immutable payment record
+    // FIX: Immutable payment record with explicit USD/UGX fields
     const paymentData = {
       id: paymentId,
       userId,
@@ -186,6 +186,7 @@ export const pesajetWebhook = async (req, res, next) => {
       if (payment.gateway !== 'pesajet' && payment.gateway !== undefined) return res.status(200).send('Ignored: Not PesaJet');
 
       if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
+        // Gateway confirmed success. Pass to settlement service.
         await settlePayment(paymentKey, 'pesajet_webhook');
       } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
         // Atomically reject
@@ -217,6 +218,7 @@ export const marzPayWebhook = async (req, res, next) => {
     if (payment.gateway !== 'marzpay') return res.status(200).send('Ignored: Not MarzPay');
 
     if (event_type === "collection.completed" || collection.status === "completed") {
+      // Gateway confirmed success. Pass to settlement service.
       await settlePayment(paymentKey, 'marzpay_webhook');
     } else if (event_type === "collection.failed" || collection.status === "failed") {
       await getRef(`payments/${paymentKey}`).transaction((p) => {
@@ -230,35 +232,38 @@ export const marzPayWebhook = async (req, res, next) => {
 };
 
 // ==========================================
-// CRON JOB FUNCTION 
+// CRON JOB FUNCTION (Reconciliation & Recovery)
 // ==========================================
 export const checkPendingPayments = async () => {
   try {
-    const snapshot = await getRef('payments').orderByChild('status').equalTo('pending').get();
-    if (!snapshot.exists()) return;
-
-    const pendingPayments = Object.values(snapshot.val());
-    for (const payment of pendingPayments) {
-      if (payment.gatewayReference && payment.gatewayReference !== 'N/A' && payment.gatewayReference.length > 20) {
-        // PesaJet polling for MTN/Airtel
-        const response = await fetch(`${process.env.PESAJET_API_URL}/${payment.gatewayReference}`, { headers: { 'X-API-KEY': process.env.PESAJET_API_KEY } });
-        const result = await response.json();
-        if (result.status === 'SUCCESS' || result.status === 'COMPLETED') {
-          await settlePayment(payment.id, 'cron_reconciliation');
-        }
-      } else if (payment.gateway === 'marzpay') {
-        // MarzPay polling (if needed)
-      }
-    }
-    
-    // Also check for stale 'processing' payments and try to settle them
+    // 1. Settlement Recovery: Find stale 'processing' payments
+    // This does NOT query the gateway. It retries the settlement because the gateway already confirmed success previously.
+    // This is crash recovery for the settlement process.
     const processingSnap = await getRef('payments').orderByChild('status').equalTo('processing').get();
     if (processingSnap.exists()) {
       const processingPayments = Object.values(processingSnap.val());
       for (const payment of processingPayments) {
         const age = Date.now() - (payment.processingStartedAt || 0);
         if (age > 120000) { // If stuck for >2 mins
+           logger.info(`[Cron Recovery] Found stale processing payment ${payment.id}. Retrying settlement.`);
            await settlePayment(payment.id, 'cron_recovery');
+        }
+      }
+    }
+    
+    // 2. Gateway Confirmation: Poll PesaJet for 'pending' MTN/Airtel payments
+    // This queries the gateway to see if the user paid while the webhook was down.
+    const pendingSnap = await getRef('payments').orderByChild('status').equalTo('pending').get();
+    if (!pendingSnap.exists()) return;
+
+    const pendingPayments = Object.values(pendingSnap.val());
+    for (const payment of pendingPayments) {
+      if (payment.gatewayReference && payment.gatewayReference !== 'N/A' && payment.gatewayReference.length > 20) {
+        const response = await fetch(`${process.env.PESAJET_API_URL}/${payment.gatewayReference}`, { headers: { 'X-API-KEY': process.env.PESAJET_API_KEY } });
+        const result = await response.json();
+        if (result.status === 'SUCCESS' || result.status === 'COMPLETED') {
+          logger.info(`[Cron Reconciliation] Gateway confirmed payment ${payment.id}. Settling.`);
+          await settlePayment(payment.id, 'cron_reconciliation');
         }
       }
     }
@@ -271,6 +276,7 @@ export const checkPendingPayments = async () => {
 export const approvePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
+    // Admin manually approves. Settle payment handles the atomic state transition.
     const result = await settlePayment(id, 'admin_manual');
     if (result.alreadySettled) return errorResponse(res, 'Payment already approved', 400);
     if (!result.success) return errorResponse(res, 'Payment could not be approved', 400);
@@ -285,6 +291,7 @@ export const rejectPayment = async (req, res, next) => {
     const paymentSnapshot = await paymentRef.get();
     if (!paymentSnapshot.exists()) return errorResponse(res, 'Payment not found', 404);
     
+    // Atomically reject only if pending or processing
     const result = await paymentRef.transaction((p) => {
         if (p && (p.status === 'pending' || p.status === 'processing')) { p.status = 'rejected'; p.rejectedAt = new Date().toISOString(); return p; }
         return;
