@@ -76,20 +76,25 @@ export const createDeposit = async (req, res, next) => {
     const paymentId = generateUUID();
     const amountInUGX = Math.round(parsedAmount * USD_TO_UGX_RATE);
     
-    // FIX: Immutable payment record with explicit USD/UGX fields
+       // FIX: Immutable payment record with explicit USD/UGX fields
     const paymentData = {
       id: paymentId,
       userId,
       method,
       status: 'pending',
       createdAt: new Date().toISOString(),
-      // Immutable financial values
+      // FIX: Added back original fields so frontend doesn't show NaN
+      amount: parsedAmount,
+      bonus: bonus,
+      totalCredit: totalCredit,
+      // Immutable financial values for the settlement service
       amountUSD: parsedAmount,
       bonusUSD: bonus,
       totalCreditUSD: totalCredit,
       amountUGX: amountInUGX,
       exchangeRate: USD_TO_UGX_RATE
     };
+    
 
     // PATH 2: CARD PAYMENTS (MARZPAY)
     if (method === 'card') {
