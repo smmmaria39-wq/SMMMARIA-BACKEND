@@ -14,49 +14,82 @@ import {
   getPayments,
   pesajetWebhook,
   marzPayWebhook,
-  cancelPendingDeposit // <-- ADDED THIS IMPORT
+  cancelPendingDeposit
 } from '../controllers/payment.controller.js';
 
 const router = express.Router();
 
-// Updated schema to accept phone number and other gateway fields
+// ==========================================
+// VALIDATION SCHEMAS
+// ==========================================
+
+// Strict validation for deposit creation
 const depositSchema = {
- body: z.object({
-  amount: z.number().positive(),
-  method: z.string().min(2),
-  email: z.string().optional(),
-  phoneNumber: z.string().optional(),
-  country: z.string().optional(),
-  reference: z.string().optional(),
-  description: z.string().optional(),
-  callback_url: z.string().optional(),
-  cardNumber: z.string().optional(),
-  cardExpiry: z.string().optional(),
-  cardCvv: z.string().optional(),
-  receipt: z.string().optional()
- })
+  body: z.object({
+    // Amount must be a positive number, capped at 10000 to prevent abuse
+    amount: z.number().positive('Amount must be greater than 0').max(10000, 'Maximum deposit is $10,000'),
+    
+    // Method must be one of the exact supported strings
+    method: z.enum(['mtn', 'airtel', 'card', 'manual'], {
+      errorMap: () => ({ message: 'Invalid payment method' })
+    }),
+    
+    // Optional fields with strict validation
+    email: z.string().email('Invalid email format').optional(),
+    phoneNumber: z.string().regex(/^(?:\+?256|0)\d{9}$/, 'Invalid Ugandan phone number format (e.g., 07XXXXXXXX or +2567XXXXXXXX)').optional(),
+    country: z.string().length(2, 'Country code must be 2 characters').optional().default('UG'),
+    reference: z.string().max(100).optional(),
+    description: z.string().max(200).optional(),
+    callback_url: z.string().url('Invalid callback URL').optional(),
+    receipt: z.string().optional()
+  })
+  // Strip unknown properties to prevent injection of unexpected fields
+  .strict()
 };
 
-// PesaJet Webhook — MTN/Airtel
+// ==========================================
+// WEBHOOK ROUTES
+// ==========================================
+
+// PesaJet Webhook — MTN/Airtel (Server-to-Server POST)
+// The controller verifies the transaction status before calling settlePayment()
 router.post('/webhook', pesajetWebhook);
 
 // MarzPay Webhook — Card payments (Server-to-Server POST)
+// The controller verifies the event_type/collection status before calling settlePayment()
 router.post('/marzpay-webhook', marzPayWebhook);
 
-// MarzPay Webhook — Browser Redirect (GET request when user returns from MarzPay checkout)
+// MarzPay Webhook — Browser Redirect (GET request)
+// CRITICAL SECURITY: This route ONLY redirects the user's browser back to the frontend.
+// It NEVER credits a wallet, marks a payment as approved, or trusts the browser's return URL.
+// The actual settlement is handled exclusively by the POST /marzpay-webhook route above.
 router.get('/marzpay-webhook', (req, res) => {
-  // Safely redirect the user's browser back to your wallet page
   const frontendUrl = process.env.FRONTEND_URL || 'https://smmaria.site';
   res.redirect(`${frontendUrl}/wallet.html`);
 });
 
-// User Routes
+// ==========================================
+// USER ROUTES
+// ==========================================
+
+// Create deposit request (MTN, Airtel, Card, Manual)
 router.post('/deposit', protect, validate(depositSchema), createDeposit);
-router.post('/cancel', protect, cancelPendingDeposit); 
+
+// Cancel a stuck pending Mobile Money deposit
+router.post('/cancel', protect, cancelPendingDeposit);
+
+// Get payment history (Controller filters out sensitive data like gateway payloads/credentials for users)
 router.get('/', protect, getPayments);
 
-// Admin Routes
+// ==========================================
+// ADMIN ROUTES
+// ==========================================
+
+// Admin manual approval (Controller calls settlePayment() which is idempotent)
+// If the gateway already settled this, settlePayment() safely aborts the credit.
 router.put('/:id/approve', protect, admin, approvePayment);
+
+// Admin manual rejection
 router.put('/:id/reject', protect, admin, rejectPayment);
 
 export default router;
