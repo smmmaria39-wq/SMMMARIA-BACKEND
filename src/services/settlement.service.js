@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 /**
  * Centralized, Idempotent Payment Settlement
  * @param {string} paymentId - The internal UUID of the payment
- * @param {string} source - Who is settling it (e.g., 'pesajet_webhook', 'cron', 'admin')
+ * @param {string} source - Who is settling it (e.g., 'pesajet_webhook', 'cron_recovery', 'admin')
  */
 export const settlePayment = async (paymentId, source = 'unknown') => {
     if (!paymentId) throw new Error('Payment ID is required for settlement.');
@@ -43,9 +43,7 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
             return; // Abort if not pending
         });
         
-        if (!claimRes.committed) {
-            return { success: false, message: 'Payment was claimed by another process' };
-        }
+        if (!claimRes.committed) return { success: false, message: 'Payment claimed by another process' };
         paymentData = claimRes.snapshot.val();
     } else if (paymentData.status === 'processing') {
         // If processing, only take over if stale (> 2 minutes)
@@ -53,27 +51,44 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
         if (age < 120000) {
             return { success: false, message: 'Payment is currently being processed' };
         }
+        
+        // Atomically take over stale processing
+        const takeoverRes = await paymentRef.transaction((p) => {
+            if (p && p.status === 'processing') {
+                const currentAge = Date.now() - (p.processingStartedAt || 0);
+                if (currentAge < 120000) return; // Abort if someone else just took over
+                p.processingStartedAt = Date.now(); // Reset timer
+                return p;
+            }
+            return; // Abort if no longer processing
+        });
+        
+        if (!takeoverRes.committed) return { success: false, message: 'Payment completed by another process or no longer stale' };
         logger.warn(`[Settlement] Stale processing detected for ${paymentId}. Taking over.`);
     }
     
-    const { userId, totalCredit } = paymentData;
+    // FIX: Use totalCreditUSD instead of totalCredit to match the immutable payment record
+    const { userId, totalCreditUSD } = paymentData;
+    if (!totalCreditUSD) throw new Error('Payment record is missing totalCreditUSD. Cannot settle.');
+    
     const userRef = getRef(`users/${userId}`);
     
     // 3. ATOMIC & IDEMPOTENT WALLET CREDIT
-    // We use a transaction on the user node. We check if the paymentId exists in their `credits` ledger.
+    // We use a transaction on the user node. We check if the paymentId exists in their `walletCredits` ledger.
     // If it does, we abort (already credited). If not, we increment balance AND write the ledger entry.
+    // This guarantees exactly one credit per paymentId, even if the server crashes or multiple processes run.
     const creditRes = await userRef.transaction((u) => {
         if (!u) return u;
         
         // Idempotency check inside the transaction
-        if (u.credits && u.credits[paymentId]) {
+        if (u.walletCredits && u.walletCredits[paymentId]) {
             return; // Abort - already credited!
         }
         
-        u.balance = (u.balance || 0) + totalCredit;
-        u.credits = u.credits || {};
-        u.credits[paymentId] = {
-            amount: totalCredit,
+        u.balance = (u.balance || 0) + totalCreditUSD;
+        u.walletCredits = u.walletCredits || {};
+        u.walletCredits[paymentId] = {
+            amount: totalCreditUSD,
             source: source,
             creditedAt: Date.now()
         };
@@ -84,7 +99,7 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     if (!creditRes.committed) {
         // Transaction aborted. Could be concurrent modification or our idempotency abort.
         const userVal = (await userRef.get()).val();
-        if (!userVal.credits || !userVal.credits[paymentId]) {
+        if (!userVal.walletCredits || !userVal.walletCredits[paymentId]) {
             // It was a concurrent modification (e.g., user updated profile at same time).
             // Revert payment to pending so cron can retry it later.
             if (paymentData.status === 'pending') {
@@ -95,13 +110,30 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
         // If it was our idempotency abort, it means it was already credited. Proceed to finalize.
     }
     
-    // 4. Finalize Payment Status
+    // 4. Write to dedicated top-level Wallet Ledger (For auditing, non-blocking)
+    // We don't need a transaction here because the user node transaction is the source of truth for idempotency.
+    try {
+        await getRef(`walletLedger/${paymentId}`).set({
+            paymentId,
+            userId,
+            amount: totalCreditUSD,
+            source,
+            gateway: paymentData.gateway || (paymentData.method === 'card' ? 'marzpay' : 'pesajet'),
+            gatewayReference: paymentData.gatewayReference,
+            status: 'completed',
+            completedAt: Date.now()
+        });
+    } catch (e) {
+        logger.error(`[Settlement] Failed to write to top-level walletLedger for ${paymentId}. Idempotency is safe, but audit log may be missing.`, e);
+    }
+    
+    // 5. Finalize Payment Status
     await paymentRef.update({
         status: 'completed',
         completedAt: Date.now(),
         settlementSource: source
     });
     
-    logger.success(`[Settlement] Payment ${paymentId} settled successfully via ${source}. Credited $${totalCredit}.`);
+    logger.success(`[Settlement] Payment ${paymentId} settled successfully via ${source}. Credited $${totalCreditUSD}.`);
     return { success: true, message: 'Payment settled successfully' };
 };
