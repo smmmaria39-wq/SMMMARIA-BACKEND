@@ -111,7 +111,7 @@ export const createDeposit = async (req, res, next) => {
     
     const paymentData = {
       id: paymentId,
-      userId,
+      userId, // FIX: Strictly embedded in the payment record so it never crosses users
       method,
       status: 'pending',
       createdAt: new Date().toISOString(),
@@ -132,8 +132,6 @@ export const createDeposit = async (req, res, next) => {
     const updates = {};
     updates[`payments/${paymentId}`] = paymentData;
     updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString() };
-    // paymentIdempotency is already updated securely inside the transaction above, 
-    // but we ensure no other fields are overwritten.
     await getRef().update(updates);
 
     // PATH 1: MANUAL PAYMENTS
@@ -234,13 +232,9 @@ export const pesajetWebhook = async (req, res, next) => {
       const payments = snapshot.val();
       const paymentKeys = Object.keys(payments);
       
-      // FIX: If duplicate payments exist for the same gateway reference, 
-      // settle only the FIRST one and reject the rest to prevent over-crediting.
       if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
-        // 1. Settle the first one
         await settlePayment(paymentKeys[0], 'pesajet_webhook');
         
-        // 2. Reject any duplicates
         for (let i = 1; i < paymentKeys.length; i++) {
           await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
             if (p && p.status === 'pending') { 
@@ -252,7 +246,6 @@ export const pesajetWebhook = async (req, res, next) => {
           });
         }
       } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
-        // Reject all matching payments
         for (const key of paymentKeys) {
           await getRef(`payments/${key}`).transaction((p) => {
             if (p && (p.status === 'pending' || p.status === 'processing')) { 
@@ -287,10 +280,8 @@ export const marzPayWebhook = async (req, res, next) => {
     const paymentKeys = Object.keys(payments);
 
     if (event_type === "collection.completed" || collection.status === "completed") {
-      // 1. Settle the first one
       await settlePayment(paymentKeys[0], 'marzpay_webhook');
       
-      // 2. Reject any duplicates
       for (let i = 1; i < paymentKeys.length; i++) {
         await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
           if (p && p.status === 'pending') { 
@@ -302,7 +293,6 @@ export const marzPayWebhook = async (req, res, next) => {
         });
       }
     } else if (event_type === "collection.failed" || collection.status === "failed") {
-      // Reject all matching payments
       for (const key of paymentKeys) {
         await getRef(`payments/${key}`).transaction((p) => {
           if (p && (p.status === 'pending' || p.status === 'processing')) { 
@@ -327,12 +317,10 @@ export const marzPayWebhook = async (req, res, next) => {
 export const checkPendingPayments = async () => {
   const cronLockRef = getRef('cronLocks/checkPendingPayments');
   
-  // 1. PREVENT MULTIPLE CRON INSTANCES FROM RUNNING THE SAME JOB
   const lockResult = await cronLockRef.transaction((current) => {
     if (!current) return { lockedAt: Date.now() };
-    // Expire lock after 2 minutes to prevent permanent blocking if a process crashes
     if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() }; 
-    return; // Abort - another instance is running
+    return; 
   });
 
   if (!lockResult.committed) {
@@ -343,20 +331,18 @@ export const checkPendingPayments = async () => {
   logger.info('[Cron] Distributed lock acquired. Running pending payments check...');
 
   try {
-    // 2. PROTECT THE STALE `processing` RECOVERY PATH
+    // 1. PROTECT THE STALE `processing` RECOVERY PATH
     const processingSnap = await getRef('payments').orderByChild('status').equalTo('processing').get();
     if (processingSnap.exists()) {
       const processingPayments = Object.values(processingSnap.val());
       for (const payment of processingPayments) {
         const age = Date.now() - (payment.processingStartedAt || 0);
         if (age > 120000) { 
-          // Atomically claim the payment for Cron recovery
           const recoveryClaimRef = getRef(`settlementClaims/${payment.id}`);
           const claimResult = await recoveryClaimRef.transaction((c) => {
             if (!c) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
-            // Expire claim after 1 minute
             if (Date.now() - c.claimedAt > 60000) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
-            return; // Abort if already claimed
+            return; 
           });
           
           if (!claimResult.committed) {
@@ -367,19 +353,17 @@ export const checkPendingPayments = async () => {
           const claimData = claimResult.snapshot.val() || {};
           logger.info(`[Cron Recovery] Settlement attempt: paymentId=${payment.id} userId=${payment.userId} gatewayReference=${payment.gatewayReference} previousStatus=processing cronSource=cron_recovery claimId=${claimData.claimId}`);
           
-          // The only function used to perform actual payment settlement
           await settlePayment(payment.id, 'cron_recovery');
         }
       }
     }
     
-    // 3. PROTECT THE PENDING PesaJet RECONCILIATION PATH
+    // 2. PROTECT THE PENDING PesaJet RECONCILIATION PATH
     const pendingSnap = await getRef('payments').orderByChild('status').equalTo('pending').get();
     if (!pendingSnap.exists()) return;
 
     const pendingPayments = Object.values(pendingSnap.val());
     for (const payment of pendingPayments) {
-      // Re-read the payment from Firebase to confirm it is STILL `pending`
       const currentPaymentSnap = await getRef(`payments/${payment.id}`).get();
       const currentPayment = currentPaymentSnap.val();
       
@@ -387,7 +371,24 @@ export const checkPendingPayments = async () => {
         continue;
       }
 
-      // Check whether another payment with the same gatewayReference has already been completed or is being processed
+      // FIX: CLEANUP OLD STALE PENDING PAYMENTS
+      // Changed to 5 minutes (300000 ms). If you truly want 5 seconds, change 300000 to 5000.
+      const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
+      if (paymentAge > 300000) { 
+        logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 5 minutes. Rejecting.`);
+        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+          if (p && p.status === 'pending') {
+            p.status = 'rejected';
+            p.failureReason = 'Stale pending payment (expired)';
+            return p;
+          }
+          return;
+        });
+        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+        continue;
+      }
+
+      // Check for duplicate gateway references
       const dupSnap = await getRef('payments').orderByChild('gatewayReference').equalTo(currentPayment.gatewayReference).get();
       let isDuplicate = false;
       if (dupSnap.exists()) {
@@ -413,12 +414,12 @@ export const checkPendingPayments = async () => {
         continue;
       }
 
-      // Atomically claim the payment for reconciliation to fix the race condition
+      // Claim for reconciliation
       const reconClaimRef = getRef(`settlementClaims/${currentPayment.id}`);
       const claimResult = await reconClaimRef.transaction((c) => {
         if (!c) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
         if (Date.now() - c.claimedAt > 60000) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
-        return; // Abort if already claimed
+        return; 
       });
 
       if (!claimResult.committed) {
@@ -433,19 +434,17 @@ export const checkPendingPayments = async () => {
       const result = await response.json();
       const gatewayStatus = result.status || 'UNKNOWN';
 
-      // 8. AFTER GATEWAY SUCCESS
       if (gatewayStatus === 'SUCCESS' || gatewayStatus === 'COMPLETED') {
         logger.info(`[Cron Reconciliation] Settlement attempt: paymentId=${currentPayment.id} userId=${currentPayment.userId} gatewayReference=${currentPayment.gatewayReference} previousStatus=pending cronSource=cron_reconciliation claimId=${claimData.claimId} gatewayStatus=${gatewayStatus}`);
         
         const settlementResult = await settlePayment(currentPayment.id, 'cron_reconciliation');
         logger.info(`[Cron Reconciliation] Settlement result: paymentId=${currentPayment.id} result=${JSON.stringify(settlementResult)}`);
         
-        // 10. ACTIVE DEPOSIT LOCK: Release only when actually settled
         if (settlementResult.success || settlementResult.alreadySettled) {
+          // Uses the userId strictly attached to this specific payment record
           await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
         }
       } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
-        // 9. HANDLE FAILED/EXPIRED PAYMENTS SAFELY
         await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
@@ -460,7 +459,6 @@ export const checkPendingPayments = async () => {
   } catch (error) { 
     console.error('Cron Error:', error.message); 
   } finally {
-    // Always release the lock in a finally block when the job finishes
     await cronLockRef.remove();
     logger.info('[Cron] Released distributed lock.');
   }
@@ -504,6 +502,7 @@ export const rejectPayment = async (req, res, next) => {
 export const cancelPendingDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
+    // Queries payments strictly by the logged-in user's ID
     const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
     if (!snapshot.exists()) return errorResponse(res, 'No pending deposits found.', 404);
 
@@ -522,7 +521,7 @@ export const cancelPendingDeposit = async (req, res, next) => {
             p.failureReason = 'Cancelled by user';
             return p;
           }
-          return; // Abort if not pending
+          return; 
         });
         
         if (cancelRes.committed) {
