@@ -101,7 +101,6 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     const userVal = (await userRef.get()).val();
     if (!userVal.walletCredits || !userVal.walletCredits[paymentId]) {
       // FIX: It was a concurrent modification. Revert to pending so cron can retry.
-      // The previous check (paymentData.status === 'pending') was unreachable because status is 'processing' here.
       await paymentRef.update({ status: 'pending', processingSource: null, processingStartedAt: null });
       throw new Error('Concurrent user update during settlement. Payment reverted to pending.');
     }
@@ -131,6 +130,12 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     settlementSource: source
   });
   
+  // FIX: UPDATE THE TRANSACTION RECORD SO FRONTEND AND ADMIN PANEL SHOW IT AS COMPLETED
+  await getRef(`transactions/${paymentId}`).update({
+    status: 'completed',
+    completedAt: new Date().toISOString()
+  });
+
   logger.success(`[Settlement] Payment ${paymentId} settled successfully via ${source}. Credited $${totalCreditUSD}.`);
   return { success: true, message: 'Payment settled successfully' };
 };
