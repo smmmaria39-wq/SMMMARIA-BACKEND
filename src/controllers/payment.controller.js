@@ -53,19 +53,23 @@ export const createDeposit = async (req, res, next) => {
     }
 
     // ==========================================
-    // 1. IDEMPOTENCY CHECK (NEW)
+    // 1. IDEMPOTENCY CHECK (FIXED ATOMIC CLAIM)
     // ==========================================
     if (!idempotencyKey) {
       return errorResponse(res, 'Idempotency key is required', 400);
     }
 
+    // FIX: Generate paymentId BEFORE the transaction so it can be written atomically
+    const paymentId = generateUUID();
     const idempotencyRef = getRef(`paymentIdempotency/${userId}/${idempotencyKey}`);
+    
     const idempotencyClaim = await idempotencyRef.transaction((current) => {
-      if (current && current.paymentId) return; // Abort - already exists
-      return { status: 'pending', createdAt: Date.now() };
+      if (current && current.paymentId) return; // Abort - already exists and is claimed
+      return { status: 'pending', createdAt: Date.now(), paymentId: paymentId }; // FIX: Write paymentId INSIDE the transaction
     });
 
     if (!idempotencyClaim.committed) {
+      // Transaction aborted because it already exists
       const existingSnap = await idempotencyRef.get();
       const existingData = existingSnap.val();
       
@@ -103,7 +107,6 @@ export const createDeposit = async (req, res, next) => {
       }
     }
 
-    const paymentId = generateUUID();
     const amountInUGX = Math.round(parsedAmount * USD_TO_UGX_RATE);
     
     const paymentData = {
@@ -124,15 +127,16 @@ export const createDeposit = async (req, res, next) => {
     };
     
     // ==========================================
-    // 2. ATOMIC SAVE BEFORE GATEWAY CALL (NEW)
+    // 2. ATOMIC SAVE BEFORE GATEWAY CALL
     // ==========================================
     const updates = {};
     updates[`payments/${paymentId}`] = paymentData;
     updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString() };
-    updates[`paymentIdempotency/${userId}/${idempotencyKey}/paymentId`] = paymentId;
+    // paymentIdempotency is already updated securely inside the transaction above, 
+    // but we ensure no other fields are overwritten.
     await getRef().update(updates);
 
-    // PATH 1: MANUAL PAYMENTS (NEW)
+    // PATH 1: MANUAL PAYMENTS
     if (method === 'manual') {
       return successResponse(res, 'Deposit request created! Please send your receipt via WhatsApp.', paymentData, 201);
     }
@@ -146,7 +150,7 @@ export const createDeposit = async (req, res, next) => {
 
         if (!MARZPAY_API_CREDENTIALS) throw new Error('MarzPay API credentials missing.');
 
-        const marzpayReference = paymentId; // FIX: Deterministic reference
+        const marzpayReference = paymentId; // Deterministic reference
         const response = await fetch(`${MARZPAY_API_URL}/collect-money`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}` },
