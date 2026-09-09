@@ -60,20 +60,21 @@ export const createDeposit = async (req, res, next) => {
     });
 
     if (!idempotencyClaim.committed) {
-      // Idempotency key already used. Return the original payment.
+      // FIX: Safely check if the transaction aborted because it already exists
       const existingSnap = await idempotencyRef.get();
-      const existingPaymentId = existingSnap.val().paymentId;
-      if (existingPaymentId) {
-        const paymentSnap = await getRef(`payments/${existingPaymentId}`).get();
+      const existingData = existingSnap.val();
+      
+      if (existingData && existingData.paymentId) {
+        const paymentSnap = await getRef(`payments/${existingData.paymentId}`).get();
         if (paymentSnap.exists()) {
           const p = paymentSnap.val();
-          // Restore exact original response format
           if (p.method === 'card' && p.redirectUrl) {
             return successResponse(res, 'Card payment already initiated', { paymentId: p.id, reference: p.gatewayReference, redirect_url: p.redirectUrl }, 200);
           }
           return successResponse(res, 'Payment already initiated', p, 200);
         }
       }
+      // If it aborted for another reason (concurrent modification), inform the user safely
       return errorResponse(res, 'A deposit request is already being processed. Please wait.', 200);
     }
 
@@ -140,6 +141,11 @@ export const createDeposit = async (req, res, next) => {
     // ==========================================
     // 4. CALL GATEWAY
     // ==========================================
+    // PATH 1: MANUAL PAYMENTS (No gateway call needed)
+    if (method === 'manual') {
+      return successResponse(res, 'Deposit request created! Please send your receipt via WhatsApp.', paymentData, 201);
+    }
+
     // PATH 2: CARD PAYMENTS (MARZPAY)
     if (method === 'card') {
       try {
