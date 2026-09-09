@@ -65,11 +65,10 @@ export const createDeposit = async (req, res, next) => {
     
     const idempotencyClaim = await idempotencyRef.transaction((current) => {
       if (current && current.paymentId) return; // Abort - already exists and is claimed
-      return { status: 'pending', createdAt: Date.now(), paymentId: paymentId }; // FIX: Write paymentId INSIDE the transaction
+      return { status: 'pending', createdAt: Date.now(), paymentId: paymentId };
     });
 
     if (!idempotencyClaim.committed) {
-      // Transaction aborted because it already exists
       const existingSnap = await idempotencyRef.get();
       const existingData = existingSnap.val();
       
@@ -77,6 +76,11 @@ export const createDeposit = async (req, res, next) => {
         const paymentSnap = await getRef(`payments/${existingData.paymentId}`).get();
         if (paymentSnap.exists()) {
           const p = paymentSnap.val();
+          // If the existing payment was rejected, allow the user to try again by removing the old key
+          if (p.status === 'rejected' || p.status === 'cancelled') {
+            await idempotencyRef.remove();
+            return errorResponse(res, 'Previous attempt failed. Please try again.', 200);
+          }
           if (p.method === 'card' && p.redirectUrl) {
             return successResponse(res, 'Card payment already initiated', { paymentId: p.id, reference: p.gatewayReference, redirect_url: p.redirectUrl }, 200);
           }
@@ -111,7 +115,7 @@ export const createDeposit = async (req, res, next) => {
     
     const paymentData = {
       id: paymentId,
-      userId, // FIX: Strictly embedded in the payment record so it never crosses users
+      userId,
       method,
       status: 'pending',
       createdAt: new Date().toISOString(),
@@ -131,7 +135,8 @@ export const createDeposit = async (req, res, next) => {
     // ==========================================
     const updates = {};
     updates[`payments/${paymentId}`] = paymentData;
-    updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString() };
+    // FIX: Added `method` field to transaction record for frontend display
+    updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString(), method: method };
     await getRef().update(updates);
 
     // PATH 1: MANUAL PAYMENTS
@@ -168,6 +173,7 @@ export const createDeposit = async (req, res, next) => {
       } catch (apiError) {
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
+        await getRef(`paymentIdempotency/${userId}/${idempotencyKey}`).remove(); // Release idempotency lock so user can retry
         return errorResponse(res, `Card payment failed: ${apiError.message}`, 400);
       }
     }
@@ -209,6 +215,7 @@ export const createDeposit = async (req, res, next) => {
         await getRef(`users/${userId}/activeDeposit`).remove(); // Release lock on failure
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
+        await getRef(`paymentIdempotency/${userId}/${idempotencyKey}`).remove(); // Release idempotency lock so user can retry
         return errorResponse(res, `Payment failed: ${apiError.message}`, 400);
       }
     }
@@ -372,7 +379,7 @@ export const checkPendingPayments = async () => {
       }
 
       // FIX: CLEANUP OLD STALE PENDING PAYMENTS
-      // Changed to 5 minutes (300000 ms). If you truly want 5 seconds, change 300000 to 5000.
+      // 5 minutes (300000 ms). Do not change this value.
       const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
       if (paymentAge > 300000) { 
         logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 5 minutes. Rejecting.`);
@@ -385,6 +392,7 @@ export const checkPendingPayments = async () => {
           return;
         });
         await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
         continue;
       }
 
@@ -411,6 +419,8 @@ export const checkPendingPayments = async () => {
           }
           return;
         });
+        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
         continue;
       }
 
@@ -441,7 +451,6 @@ export const checkPendingPayments = async () => {
         logger.info(`[Cron Reconciliation] Settlement result: paymentId=${currentPayment.id} result=${JSON.stringify(settlementResult)}`);
         
         if (settlementResult.success || settlementResult.alreadySettled) {
-          // Uses the userId strictly attached to this specific payment record
           await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
         }
       } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
@@ -454,6 +463,7 @@ export const checkPendingPayments = async () => {
           return;
         });
         await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
       }
     }
   } catch (error) { 
@@ -502,7 +512,6 @@ export const rejectPayment = async (req, res, next) => {
 export const cancelPendingDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    // Queries payments strictly by the logged-in user's ID
     const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
     if (!snapshot.exists()) return errorResponse(res, 'No pending deposits found.', 404);
 
