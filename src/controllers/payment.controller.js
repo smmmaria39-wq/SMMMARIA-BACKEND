@@ -44,7 +44,7 @@ const processPesaJetPayment = async (payload) => {
 export const createDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { amount, method, email, phoneNumber, idempotencyKey } = req.body; // ADDED: idempotencyKey
+    const { amount, method, email, phoneNumber, idempotencyKey } = req.body;
     
     // FIX: Strict validation
     const parsedAmount = Number(amount);
@@ -66,7 +66,6 @@ export const createDeposit = async (req, res, next) => {
     });
 
     if (!idempotencyClaim.committed) {
-      // FIX: Safely check if the transaction aborted because it already exists
       const existingSnap = await idempotencyRef.get();
       const existingData = existingSnap.val();
       
@@ -107,24 +106,21 @@ export const createDeposit = async (req, res, next) => {
     const paymentId = generateUUID();
     const amountInUGX = Math.round(parsedAmount * USD_TO_UGX_RATE);
     
-    // FIX: Immutable payment record with explicit USD/UGX fields
     const paymentData = {
       id: paymentId,
       userId,
       method,
       status: 'pending',
       createdAt: new Date().toISOString(),
-      // FIX: Added back original fields so frontend doesn't show NaN
       amount: parsedAmount,
       bonus: bonus,
       totalCredit: totalCredit,
-      // Immutable financial values for the settlement service
       amountUSD: parsedAmount,
       bonusUSD: bonus,
       totalCreditUSD: totalCredit,
       amountUGX: amountInUGX,
       exchangeRate: USD_TO_UGX_RATE,
-      idempotencyKey: idempotencyKey // ADDED: Store key in payment record
+      idempotencyKey: idempotencyKey
     };
     
     // ==========================================
@@ -150,7 +146,7 @@ export const createDeposit = async (req, res, next) => {
 
         if (!MARZPAY_API_CREDENTIALS) throw new Error('MarzPay API credentials missing.');
 
-        const marzpayReference = paymentId; // FIX: Deterministic reference to prevent duplicate gateway collections
+        const marzpayReference = paymentId; // FIX: Deterministic reference
         const response = await fetch(`${MARZPAY_API_URL}/collect-money`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}` },
@@ -160,7 +156,6 @@ export const createDeposit = async (req, res, next) => {
 
         if (!response.ok || !result.data || !result.data.redirect_url) throw new Error(result.message || 'MarzPay did not return redirect URL.');
 
-        // FIX: Update existing record instead of overwriting
         await getRef(`payments/${paymentId}`).update({
           gateway: "marzpay",
           gatewayReference: marzpayReference,
@@ -192,9 +187,8 @@ export const createDeposit = async (req, res, next) => {
             gatewayResponse = await processPesaJetPayment(gatewayPayload);
             const gatewayRef = gatewayResponse.transactionId || gatewayResponse.id || gatewayPayload.reference;
             
-            // FIX: Update existing record with gateway data
             await getRef(`payments/${paymentId}`).update({
-                gateway: "pesajet", // FIX: Explicitly set gateway
+                gateway: "pesajet",
                 gatewayReference: gatewayRef
             });
         } catch (apiError) {
@@ -233,23 +227,41 @@ export const pesajetWebhook = async (req, res, next) => {
 
     const snapshot = await getRef('payments').orderByChild('gatewayReference').equalTo(transactionId).get();
     if (snapshot.exists()) {
-      const paymentKey = Object.keys(snapshot.val())[0];
-      const payment = snapshot.val()[paymentKey];
-
-      if (payment.gateway !== 'pesajet' && payment.gateway !== undefined) return res.status(200).send('Ignored: Not PesaJet');
-
+      const payments = snapshot.val();
+      const paymentKeys = Object.keys(payments);
+      
+      // FIX: If duplicate payments exist for the same gateway reference, 
+      // settle only the FIRST one and reject the rest to prevent over-crediting.
       if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
-        // Gateway confirmed success. Pass to settlement service.
-        await settlePayment(paymentKey, 'pesajet_webhook');
-      } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
-        // Atomically reject
-        await getRef(`payments/${paymentKey}`).transaction((p) => {
-            // FIX: Allow rejection if pending OR processing
-            if (p && (p.status === 'pending' || p.status === 'processing')) { p.status = 'rejected'; p.failureReason = status; return p; }
+        // 1. Settle the first one
+        await settlePayment(paymentKeys[0], 'pesajet_webhook');
+        
+        // 2. Reject any duplicates
+        for (let i = 1; i < paymentKeys.length; i++) {
+          await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
+            if (p && p.status === 'pending') { 
+              p.status = 'rejected'; 
+              p.failureReason = 'Duplicate gateway transaction'; 
+              return p; 
+            }
             return;
-        });
-        await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
-        if (payment.userId) await getRef(`users/${payment.userId}/activeDeposit`).remove(); // Release lock
+          });
+        }
+      } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
+        // Reject all matching payments
+        for (const key of paymentKeys) {
+          await getRef(`payments/${key}`).transaction((p) => {
+            if (p && (p.status === 'pending' || p.status === 'processing')) { 
+              p.status = 'rejected'; 
+              p.failureReason = status; 
+              return p; 
+            }
+            return;
+          });
+          await getRef(`transactions/${key}`).update({ status: 'rejected' });
+        }
+        const userId = payments[paymentKeys[0]].userId;
+        if (userId) await getRef(`users/${userId}/activeDeposit`).remove();
       }
     }
     return res.status(200).send('Webhook received');
@@ -267,21 +279,39 @@ export const marzPayWebhook = async (req, res, next) => {
     const snapshot = await getRef('payments').orderByChild('gatewayReference').equalTo(collection.reference).get();
     if (!snapshot.exists()) return res.status(200).send('Payment not found');
 
-    const paymentKey = Object.keys(snapshot.val())[0];
-    const payment = snapshot.val()[paymentKey];
-    if (payment.gateway !== 'marzpay') return res.status(200).send('Ignored: Not MarzPay');
+    const payments = snapshot.val();
+    const paymentKeys = Object.keys(payments);
 
     if (event_type === "collection.completed" || collection.status === "completed") {
-      // Gateway confirmed success. Pass to settlement service.
-      await settlePayment(paymentKey, 'marzpay_webhook');
-    } else if (event_type === "collection.failed" || collection.status === "failed") {
-      await getRef(`payments/${paymentKey}`).transaction((p) => {
-          // FIX: Allow rejection if pending OR processing
-          if (p && (p.status === 'pending' || p.status === 'processing')) { p.status = 'rejected'; p.failureReason = collection.status; return p; }
+      // 1. Settle the first one
+      await settlePayment(paymentKeys[0], 'marzpay_webhook');
+      
+      // 2. Reject any duplicates
+      for (let i = 1; i < paymentKeys.length; i++) {
+        await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
+          if (p && p.status === 'pending') { 
+            p.status = 'rejected'; 
+            p.failureReason = 'Duplicate gateway transaction'; 
+            return p; 
+          }
           return;
-      });
-      await getRef(`transactions/${paymentKey}`).update({ status: 'rejected' });
-      if (payment.userId) await getRef(`users/${payment.userId}/activeDeposit`).remove(); // Release lock
+        });
+      }
+    } else if (event_type === "collection.failed" || collection.status === "failed") {
+      // Reject all matching payments
+      for (const key of paymentKeys) {
+        await getRef(`payments/${key}`).transaction((p) => {
+          if (p && (p.status === 'pending' || p.status === 'processing')) { 
+            p.status = 'rejected'; 
+            p.failureReason = collection.status; 
+            return p; 
+          }
+          return;
+        });
+        await getRef(`transactions/${key}`).update({ status: 'rejected' });
+      }
+      const userId = payments[paymentKeys[0]].userId;
+      if (userId) await getRef(`users/${userId}/activeDeposit`).remove();
     }
     return res.status(200).send('Webhook received');
   } catch (error) { next(error); }
@@ -291,39 +321,145 @@ export const marzPayWebhook = async (req, res, next) => {
 // CRON JOB FUNCTION (Reconciliation & Recovery)
 // ==========================================
 export const checkPendingPayments = async () => {
+  const cronLockRef = getRef('cronLocks/checkPendingPayments');
+  
+  // 1. PREVENT MULTIPLE CRON INSTANCES FROM RUNNING THE SAME JOB
+  const lockResult = await cronLockRef.transaction((current) => {
+    if (!current) return { lockedAt: Date.now() };
+    // Expire lock after 2 minutes to prevent permanent blocking if a process crashes
+    if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() }; 
+    return; // Abort - another instance is running
+  });
+
+  if (!lockResult.committed) {
+    logger.info('[Cron] Skipped execution: another instance is running.');
+    return;
+  }
+
+  logger.info('[Cron] Distributed lock acquired. Running pending payments check...');
+
   try {
-    // 1. Settlement Recovery: Find stale 'processing' payments
-    // This does NOT query the gateway. It retries the settlement because the gateway already confirmed success previously.
-    // This is crash recovery for the settlement process.
+    // 2. PROTECT THE STALE `processing` RECOVERY PATH
     const processingSnap = await getRef('payments').orderByChild('status').equalTo('processing').get();
     if (processingSnap.exists()) {
       const processingPayments = Object.values(processingSnap.val());
       for (const payment of processingPayments) {
         const age = Date.now() - (payment.processingStartedAt || 0);
-        if (age > 120000) { // If stuck for >2 mins
-           logger.info(`[Cron Recovery] Found stale processing payment ${payment.id}. Retrying settlement.`);
-           await settlePayment(payment.id, 'cron_recovery');
+        if (age > 120000) { 
+          // Atomically claim the payment for Cron recovery
+          const recoveryClaimRef = getRef(`settlementClaims/${payment.id}`);
+          const claimResult = await recoveryClaimRef.transaction((c) => {
+            if (!c) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
+            // Expire claim after 1 minute
+            if (Date.now() - c.claimedAt > 60000) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
+            return; // Abort if already claimed
+          });
+          
+          if (!claimResult.committed) {
+            logger.info(`[Cron] Duplicate settlement prevented paymentId=${payment.id} source=cron_recovery`);
+            continue;
+          }
+
+          const claimData = claimResult.snapshot.val() || {};
+          logger.info(`[Cron Recovery] Settlement attempt: paymentId=${payment.id} userId=${payment.userId} gatewayReference=${payment.gatewayReference} previousStatus=processing cronSource=cron_recovery claimId=${claimData.claimId}`);
+          
+          // The only function used to perform actual payment settlement
+          await settlePayment(payment.id, 'cron_recovery');
         }
       }
     }
     
-    // 2. Gateway Confirmation: Poll PesaJet for 'pending' MTN/Airtel payments
-    // This queries the gateway to see if the user paid while the webhook was down.
+    // 3. PROTECT THE PENDING PesaJet RECONCILIATION PATH
     const pendingSnap = await getRef('payments').orderByChild('status').equalTo('pending').get();
     if (!pendingSnap.exists()) return;
 
     const pendingPayments = Object.values(pendingSnap.val());
     for (const payment of pendingPayments) {
-      if (payment.gatewayReference && payment.gatewayReference !== 'N/A' && payment.gatewayReference.length > 20) {
-        const response = await fetch(`${process.env.PESAJET_API_URL}/${payment.gatewayReference}`, { headers: { 'X-API-KEY': process.env.PESAJET_API_KEY } });
-        const result = await response.json();
-        if (result.status === 'SUCCESS' || result.status === 'COMPLETED') {
-          logger.info(`[Cron Reconciliation] Gateway confirmed payment ${payment.id}. Settling.`);
-          await settlePayment(payment.id, 'cron_reconciliation');
+      // Re-read the payment from Firebase to confirm it is STILL `pending`
+      const currentPaymentSnap = await getRef(`payments/${payment.id}`).get();
+      const currentPayment = currentPaymentSnap.val();
+      
+      if (!currentPayment || currentPayment.status !== 'pending' || !currentPayment.gatewayReference || currentPayment.gatewayReference.length <= 20) {
+        continue;
+      }
+
+      // Check whether another payment with the same gatewayReference has already been completed or is being processed
+      const dupSnap = await getRef('payments').orderByChild('gatewayReference').equalTo(currentPayment.gatewayReference).get();
+      let isDuplicate = false;
+      if (dupSnap.exists()) {
+        const dups = dupSnap.val();
+        for (const key in dups) {
+          if (key !== currentPayment.id && (dups[key].status === 'completed' || dups[key].status === 'processing')) {
+            isDuplicate = true;
+            break;
+          }
         }
       }
+
+      if (isDuplicate) {
+        logger.info(`[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`);
+        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+          if (p && p.status === 'pending') {
+            p.status = 'rejected';
+            p.failureReason = 'Duplicate gateway transaction';
+            return p;
+          }
+          return;
+        });
+        continue;
+      }
+
+      // Atomically claim the payment for reconciliation to fix the race condition
+      const reconClaimRef = getRef(`settlementClaims/${currentPayment.id}`);
+      const claimResult = await reconClaimRef.transaction((c) => {
+        if (!c) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
+        if (Date.now() - c.claimedAt > 60000) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
+        return; // Abort if already claimed
+      });
+
+      if (!claimResult.committed) {
+        logger.info(`[Cron] Duplicate settlement prevented paymentId=${currentPayment.id} source=cron_reconciliation`);
+        continue;
+      }
+
+      const claimData = claimResult.snapshot.val() || {};
+      
+      // Query Gateway
+      const response = await fetch(`${process.env.PESAJET_API_URL}/${currentPayment.gatewayReference}`, { headers: { 'X-API-KEY': process.env.PESAJET_API_KEY } });
+      const result = await response.json();
+      const gatewayStatus = result.status || 'UNKNOWN';
+
+      // 8. AFTER GATEWAY SUCCESS
+      if (gatewayStatus === 'SUCCESS' || gatewayStatus === 'COMPLETED') {
+        logger.info(`[Cron Reconciliation] Settlement attempt: paymentId=${currentPayment.id} userId=${currentPayment.userId} gatewayReference=${currentPayment.gatewayReference} previousStatus=pending cronSource=cron_reconciliation claimId=${claimData.claimId} gatewayStatus=${gatewayStatus}`);
+        
+        const settlementResult = await settlePayment(currentPayment.id, 'cron_reconciliation');
+        logger.info(`[Cron Reconciliation] Settlement result: paymentId=${currentPayment.id} result=${JSON.stringify(settlementResult)}`);
+        
+        // 10. ACTIVE DEPOSIT LOCK: Release only when actually settled
+        if (settlementResult.success || settlementResult.alreadySettled) {
+          await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+        }
+      } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
+        // 9. HANDLE FAILED/EXPIRED PAYMENTS SAFELY
+        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+          if (p && p.status === 'pending') {
+            p.status = 'rejected';
+            p.failureReason = gatewayStatus;
+            return p;
+          }
+          return;
+        });
+        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+      }
     }
-  } catch (error) { console.error('Cron Error:', error.message); }
+  } catch (error) { 
+    console.error('Cron Error:', error.message); 
+  } finally {
+    // Always release the lock in a finally block when the job finishes
+    await cronLockRef.remove();
+    logger.info('[Cron] Released distributed lock.');
+  }
 };
 
 // ==========================================
@@ -332,7 +468,6 @@ export const checkPendingPayments = async () => {
 export const approvePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    // Admin manually approves. Settle payment handles the atomic state transition.
     const result = await settlePayment(id, 'admin_manual');
     if (result.alreadySettled) return errorResponse(res, 'Payment already approved', 400);
     if (!result.success) return errorResponse(res, 'Payment could not be approved', 400);
@@ -347,7 +482,6 @@ export const rejectPayment = async (req, res, next) => {
     const paymentSnapshot = await paymentRef.get();
     if (!paymentSnapshot.exists()) return errorResponse(res, 'Payment not found', 404);
     
-    // Atomically reject only if pending or processing
     const result = await paymentRef.transaction((p) => {
         if (p && (p.status === 'pending' || p.status === 'processing')) { p.status = 'rejected'; p.rejectedAt = new Date().toISOString(); return p; }
         return;
@@ -355,7 +489,7 @@ export const rejectPayment = async (req, res, next) => {
     
     if (!result.committed) return errorResponse(res, 'Payment is already completed or rejected', 400);
     await getRef(`transactions/${id}`).update({ status: 'rejected' });
-    if (result.snapshot.val().userId) await getRef(`users/${result.snapshot.val().userId}/activeDeposit`).remove(); // Release lock
+    if (result.snapshot.val().userId) await getRef(`users/${result.snapshot.val().userId}/activeDeposit`).remove();
     return successResponse(res, 'Payment rejected successfully');
   } catch (error) { next(error); }
 };
@@ -377,7 +511,6 @@ export const cancelPendingDeposit = async (req, res, next) => {
       const payment = snapshot.val()[key];
       if (payment.method === 'mtn' || payment.method === 'airtel') {
         const paymentRef = getRef(`payments/${key}`);
-        // FIX: Use transaction to prevent overwriting a completed payment
         const cancelRes = await paymentRef.transaction((p) => {
           if (!p) return;
           if (p.status === 'pending') {
@@ -392,12 +525,10 @@ export const cancelPendingDeposit = async (req, res, next) => {
           updates[`transactions/${key}/status`] = 'cancelled';
           cancelledCount++;
         } else {
-          // If transaction aborted, check what state it actually is in
           const currentStatus = cancelRes.snapshot.val()?.status;
           if (currentStatus === 'processing' || currentStatus === 'completed') {
             alreadyProcessedCount++;
           } else if (currentStatus === 'cancelled') {
-            // FIX: If it was already cancelled by a previous attempt, treat as success
             cancelledCount++;
           }
         }
@@ -405,12 +536,10 @@ export const cancelPendingDeposit = async (req, res, next) => {
     }
 
     if (cancelledCount > 0) {
-      updates[`users/${userId}/activeDeposit`] = null; // Release lock
+      updates[`users/${userId}/activeDeposit`] = null;
       await getRef().update(updates);
       return successResponse(res, 'Pending deposit cancelled successfully.');
     } else if (alreadyProcessedCount > 0) {
-      // The payment was already processing or completed by the gateway/webhook.
-      // We cannot cancel it, but we tell the frontend it's safe to remove the button.
       return successResponse(res, 'Deposit is already being processed or completed.');
     } else {
       return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
