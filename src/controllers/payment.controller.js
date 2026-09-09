@@ -368,25 +368,32 @@ export const cancelPendingDeposit = async (req, res, next) => {
     if (!snapshot.exists()) return errorResponse(res, 'No pending deposits found.', 404);
 
     let cancelledCount = 0;
+    let alreadyProcessedCount = 0;
     const updates = {};
 
     for (const key in snapshot.val()) {
       const payment = snapshot.val()[key];
-      // Atomically cancel only if pending
-      if (payment.status === 'pending' && (payment.method === 'mtn' || payment.method === 'airtel')) {
+      if (payment.method === 'mtn' || payment.method === 'airtel') {
         const paymentRef = getRef(`payments/${key}`);
         const cancelRes = await paymentRef.transaction((p) => {
-          if (p && p.status === 'pending') {
+          if (!p) return;
+          if (p.status === 'pending') {
             p.status = 'cancelled';
             p.failureReason = 'Cancelled by user';
             return p;
           }
-          return;
+          return; // Abort if not pending
         });
         
         if (cancelRes.committed) {
           updates[`transactions/${key}/status`] = 'cancelled';
           cancelledCount++;
+        } else {
+          // If transaction aborted, check what state it actually is in
+          const currentStatus = cancelRes.snapshot.val()?.status;
+          if (currentStatus === 'processing' || currentStatus === 'completed') {
+            alreadyProcessedCount++;
+          }
         }
       }
     }
@@ -395,6 +402,10 @@ export const cancelPendingDeposit = async (req, res, next) => {
       updates[`users/${userId}/activeDeposit`] = null; // Release lock
       await getRef().update(updates);
       return successResponse(res, 'Pending deposit cancelled successfully.');
+    } else if (alreadyProcessedCount > 0) {
+      // The payment was already processing or completed by the gateway/webhook.
+      // We cannot cancel it, but we tell the frontend it's safe to remove the button.
+      return successResponse(res, 'Deposit is already being processed or completed.');
     } else {
       return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
     }
