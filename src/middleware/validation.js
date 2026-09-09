@@ -9,19 +9,50 @@ import { errorResponse } from '../utils/response.js';
  * @param {Object} schema - Zod schema object { body, query, params }
  */
 export const validate = (schema) => (req, res, next) => {
- try {
-  // Zod allows parsing specific parts of the request
-  if (schema.body) schema.body.parse(req.body);
-  if (schema.query) schema.query.parse(req.query);
-  if (schema.params) schema.params.parse(req.params);
-  
+  const errors = [];
+
+  // Use safeParse to avoid throwing exceptions
+  if (schema.body) {
+    const result = schema.body.safeParse(req.body);
+    if (!result.success) {
+      errors.push(...result.error.errors.map(err => ({
+        field: err.path.join('.'),
+        message: err.message
+      })));
+    } else {
+      // Overwrite req.body with the parsed data (strips unknown fields if not using .strict())
+      req.body = result.data;
+    }
+  }
+
+  if (schema.query) {
+    const result = schema.query.safeParse(req.query);
+    if (!result.success) {
+      errors.push(...result.error.errors.map(err => ({
+        field: err.path.join('.'),
+        message: err.message
+      })));
+    } else {
+      req.query = result.data;
+    }
+  }
+
+  if (schema.params) {
+    const result = schema.params.safeParse(req.params);
+    if (!result.success) {
+      errors.push(...result.error.errors.map(err => ({
+        field: err.path.join('.'),
+        message: err.message
+      })));
+    } else {
+      req.params = result.data;
+    }
+  }
+
+  // If any errors were collected, return them
+  if (errors.length > 0) {
+    return errorResponse(res, 'Validation failed', 400, errors);
+  }
+
   next();
- } catch (error) {
-  // Format Zod errors into a readable object
-  const formattedErrors = error.errors.map(err => ({
-   field: err.path.join('.'),
-   message: err.message
-  }));
-  return errorResponse(res, 'Validation failed', 400, formattedErrors);
- }
 };
