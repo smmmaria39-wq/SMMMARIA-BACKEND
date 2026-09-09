@@ -34,13 +34,12 @@ const depositSchema = {
       errorMap: () => ({ message: 'Invalid payment method' })
     }),
     
+    // FIX: Added idempotencyKey to pass .strict() validation
+    idempotencyKey: z.string().min(1, 'Idempotency key is required'),
+    
     // Optional fields with strict validation
     email: z.string().email('Invalid email format').optional(),
     phoneNumber: z.string().regex(/^(?:\+?256|0)\d{9}$/, 'Invalid Ugandan phone number format (e.g., 07XXXXXXXX or +2567XXXXXXXX)').optional(),
-    country: z.string().length(2, 'Country code must be 2 characters').optional().default('UG'),
-    reference: z.string().max(100).optional(),
-    description: z.string().max(200).optional(),
-    callback_url: z.string().url('Invalid callback URL').optional(),
     receipt: z.string().optional()
   })
   // Strip unknown properties to prevent injection of unexpected fields
