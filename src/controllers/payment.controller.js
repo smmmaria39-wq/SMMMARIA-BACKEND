@@ -340,17 +340,17 @@ export const checkPendingPayments = async () => {
   
   const lockResult = await cronLockRef.transaction((current) => {
     if (!current) return { lockedAt: Date.now() };
-    if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() };
-    return;
+    if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() }; 
+    return; 
   });
-  
+
   if (!lockResult.committed) {
     logger.info('[Cron] Skipped execution: another instance is running.');
     return;
   }
-  
+
   logger.info('[Cron] Distributed lock acquired. Running pending payments check...');
-  
+
   try {
     // 1. PROTECT THE STALE `processing` RECOVERY PATH
     const processingSnap = await getRef('payments').orderByChild('status').equalTo('processing').get();
@@ -358,19 +358,19 @@ export const checkPendingPayments = async () => {
       const processingPayments = Object.values(processingSnap.val());
       for (const payment of processingPayments) {
         const age = Date.now() - (payment.processingStartedAt || 0);
-        if (age > 120000) {
+        if (age > 120000) { 
           const recoveryClaimRef = getRef(`settlementClaims/${payment.id}`);
           const claimResult = await recoveryClaimRef.transaction((c) => {
             if (!c) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
             if (Date.now() - c.claimedAt > 60000) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
-            return;
+            return; 
           });
           
           if (!claimResult.committed) {
             logger.info(`[Cron] Duplicate settlement prevented paymentId=${payment.id} source=cron_recovery`);
             continue;
           }
-          
+
           const claimData = claimResult.snapshot.val() || {};
           logger.info(`[Cron Recovery] Settlement attempt: paymentId=${payment.id} userId=${payment.userId} gatewayReference=${payment.gatewayReference} previousStatus=processing cronSource=cron_recovery claimId=${claimData.claimId}`);
           
@@ -382,7 +382,7 @@ export const checkPendingPayments = async () => {
     // 2. PROTECT THE PENDING PesaJet RECONCILIATION PATH
     const pendingSnap = await getRef('payments').orderByChild('status').equalTo('pending').get();
     if (!pendingSnap.exists()) return;
-    
+
     const pendingPayments = Object.values(pendingSnap.val());
     for (const payment of pendingPayments) {
       const currentPaymentSnap = await getRef(`payments/${payment.id}`).get();
@@ -391,7 +391,7 @@ export const checkPendingPayments = async () => {
       if (!currentPayment || currentPayment.status !== 'pending' || !currentPayment.gatewayReference || currentPayment.gatewayReference.length <= 20) {
         continue;
       }
-      
+
       // Check for duplicate gateway references
       const dupSnap = await getRef('payments').orderByChild('gatewayReference').equalTo(currentPayment.gatewayReference).get();
       let isDuplicate = false;
@@ -404,7 +404,7 @@ export const checkPendingPayments = async () => {
           }
         }
       }
-      
+
       if (isDuplicate) {
         logger.info(`[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`);
         const dupResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
@@ -422,33 +422,33 @@ export const checkPendingPayments = async () => {
         }
         continue;
       }
-      
+
       // FIX: ATOMIC GATEWAY CLAIM FOR CRON WORKERS
       const gwClaimRef = getRef(`gatewayClaims/${currentPayment.gatewayReference}`);
       const gwClaimResult = await gwClaimRef.transaction((c) => {
         if (!c) return { claimedAt: Date.now(), paymentId: currentPayment.id };
         if (Date.now() - c.claimedAt > 60000) return { claimedAt: Date.now(), paymentId: currentPayment.id };
-        return;
+        return; 
       });
-      
+
       if (!gwClaimResult.committed) {
         logger.info(`[Cron] Gateway reference ${currentPayment.gatewayReference} already claimed by another worker. Skipping.`);
         continue;
       }
-      
+
       // Claim for reconciliation
       const reconClaimRef = getRef(`settlementClaims/${currentPayment.id}`);
       const claimResult = await reconClaimRef.transaction((c) => {
         if (!c) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
         if (Date.now() - c.claimedAt > 60000) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
-        return;
+        return; 
       });
-      
+
       if (!claimResult.committed) {
         logger.info(`[Cron] Duplicate settlement prevented paymentId=${currentPayment.id} source=cron_reconciliation`);
         continue;
       }
-      
+
       const claimData = claimResult.snapshot.val() || {};
       
       // FIX: Calculate age BEFORE querying the gateway
@@ -464,7 +464,7 @@ export const checkPendingPayments = async () => {
       } catch (apiError) {
         logger.error(`[Cron] PesaJet API query failed for ${currentPayment.id}: ${apiError.message}`);
       }
-      
+
       if (gatewayStatus === 'SUCCESS' || gatewayStatus === 'COMPLETED') {
         logger.info(`[Cron Reconciliation] Settlement attempt: paymentId=${currentPayment.id} userId=${currentPayment.userId} gatewayReference=${currentPayment.gatewayReference} previousStatus=pending cronSource=cron_reconciliation claimId=${claimData.claimId} gatewayStatus=${gatewayStatus}`);
         
@@ -506,8 +506,8 @@ export const checkPendingPayments = async () => {
         }
       }
     }
-  } catch (error) {
-    console.error('Cron Error:', error.message);
+  } catch (error) { 
+    console.error('Cron Error:', error.message); 
   } finally {
     await cronLockRef.remove();
     logger.info('[Cron] Released distributed lock.');
@@ -547,7 +547,58 @@ export const rejectPayment = async (req, res, next) => {
   } catch (error) { next(error); }
 };
 
+// ==========================================
+// USER CANCEL PENDING DEPOSIT
+// ==========================================
+export const cancelPendingDeposit = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
+    if (!snapshot.exists()) return errorResponse(res, 'No pending deposits found.', 404);
 
+    let cancelledCount = 0;
+    let alreadyProcessedCount = 0;
+    const updates = {};
+
+    for (const key in snapshot.val()) {
+      const payment = snapshot.val()[key];
+      if (payment.method === 'mtn' || payment.method === 'airtel') {
+        const paymentRef = getRef(`payments/${key}`);
+        const cancelRes = await paymentRef.transaction((p) => {
+          if (!p) return;
+          if (p.status === 'pending') {
+            p.status = 'cancelled';
+            p.failureReason = 'Cancelled by user';
+            return p;
+          }
+          return; 
+        });
+        
+        if (cancelRes.committed) {
+          updates[`transactions/${key}/status`] = 'cancelled';
+          cancelledCount++;
+        } else {
+          const currentStatus = cancelRes.snapshot.val()?.status;
+          if (currentStatus === 'processing' || currentStatus === 'completed') {
+            alreadyProcessedCount++;
+          } else if (currentStatus === 'cancelled') {
+            cancelledCount++;
+          }
+        }
+      }
+    }
+
+    if (cancelledCount > 0) {
+      updates[`users/${userId}/activeDeposit`] = null;
+      await getRef().update(updates);
+      return successResponse(res, 'Pending deposit cancelled successfully.');
+    } else if (alreadyProcessedCount > 0) {
+      return successResponse(res, 'Deposit is already being processed or completed.');
+    } else {
+      return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
+    }
+  } catch (error) { next(error); }
+};
 
 // ==========================================
 // GET PAYMENTS
