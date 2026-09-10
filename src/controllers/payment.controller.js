@@ -570,9 +570,21 @@ export const getPayments = async (req, res, next) => {
     const usersMap = {};
     if (usersSnapshot.exists()) {
       const usersObj = usersSnapshot.val();
-      for (const key in usersObj) { usersMap[key] = usersObj[key].username || usersObj[key].email || 'Unknown'; }
+      for (const key in usersObj) { 
+        usersMap[key] = {
+          username: usersObj[key].username || usersObj[key].email || 'Unknown',
+          totalDeposited: usersObj[key].totalDeposited || 0,
+          balance: usersObj[key].balance || 0
+        }; 
+      }
     }
-    payments = payments.map(p => ({ ...p, username: usersMap[p.userId] || 'Unknown' }));
+    // FIX: Attach totalDeposited and balance to the payment object for the Admin Panel
+    payments = payments.map(p => ({ 
+      ...p, 
+      username: usersMap[p.userId]?.username || 'Unknown',
+      totalDeposited: usersMap[p.userId]?.totalDeposited || 0,
+      balance: usersMap[p.userId]?.balance || 0
+    }));
     if (req.user.role === 'user') payments = payments.filter(p => p.userId === req.user.id);
     return successResponse(res, 'Payments fetched successfully', payments);
   } catch (error) { next(error); }
