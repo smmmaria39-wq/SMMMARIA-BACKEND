@@ -513,13 +513,13 @@ export const checkPendingPayments = async () => {
 export const approvePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const result = await settlePayment(id, 'admin_manual');
+    // FIX: Pass `true` for isAdminOverride so the Admin can bypass gateway locks
+    const result = await settlePayment(id, 'admin_manual', true);
     if (result.alreadySettled) return errorResponse(res, 'Payment already approved', 400);
     if (!result.success) return errorResponse(res, 'Payment could not be approved', 400);
     return successResponse(res, 'Payment approved and wallet credited successfully');
   } catch (error) { next(error); }
 };
-
 export const rejectPayment = async (req, res, next) => {
   try {
     const { id } = req.params;
