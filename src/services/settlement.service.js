@@ -31,6 +31,27 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     return { success: false, message: 'Payment is cancelled or rejected' };
   }
   
+  // ==========================================
+  // 1.5. ATOMIC GATEWAY REFERENCE LOCK
+  // Prevents double-crediting if multiple payment records share the same gatewayReference
+  // ==========================================
+  if (paymentData.gatewayReference) {
+    const gwLockRef = getRef(`gatewayLocks/${paymentData.gatewayReference}`);
+    const gwLockResult = await gwLockRef.transaction((c) => {
+      if (!c) return { paymentId, lockedAt: Date.now() };
+      // Expire lock after 2 minutes
+      if (Date.now() - c.lockedAt > 120000) return { paymentId, lockedAt: Date.now() };
+      return; // Abort - another payment with this gateway reference is already being settled!
+    });
+
+    if (!gwLockResult.committed) {
+      logger.warn(`[Settlement] Duplicate gateway reference ${paymentData.gatewayReference} detected for payment ${paymentId}. Rejecting.`);
+      await paymentRef.update({ status: 'rejected', failureReason: 'Duplicate gateway transaction' });
+      await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
+      return { success: false, message: 'Duplicate gateway transaction prevented' };
+    }
+  }
+
   // 2. Claim the payment (pending -> processing)
   if (paymentData.status === 'pending') {
     const claimRes = await paymentRef.transaction((p) => {
@@ -86,6 +107,8 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     }
     
     u.balance = (u.balance || 0) + totalCreditUSD;
+    u.totalDeposited = (u.totalDeposited || 0) + totalCreditUSD; // FIX: Update totalDeposited for Admin Panel
+    
     u.walletCredits = u.walletCredits || {};
     u.walletCredits[paymentId] = {
       amount: totalCreditUSD,
