@@ -3,9 +3,11 @@
 // ===============================================
 
 import express from 'express';
+import { z } from 'zod';
 import { protect } from '../middleware/auth.js';
 import { admin } from '../middleware/admin.js';
 import { identifyPanel } from '../middleware/panelContext.js';
+import { validate } from '../middleware/validation.js';
 
 // Controllers
 import { 
@@ -16,10 +18,10 @@ import {
     getChildPanelDetails,
     updateChildPanelStatus,
     fundChildPanelWallet,
-    deductChildPanelWallet,         // ADDED
-    setChildPanelBalance,           // ADDED
-    bulkFundChildPanelWallets,      // ADDED
-    getChildPanelTransactions,      // ADDED
+    deductChildPanelWallet,
+    setChildPanelBalance,
+    bulkFundChildPanelWallets,
+    getChildPanelTransactions,
     adminCreateChildPanel,
     getPanelAnnouncements, 
     createPanelAnnouncement, 
@@ -34,6 +36,21 @@ import { createChildOrder, getPanelOrders } from '../controllers/childOrder.cont
 
 const router = express.Router();
 
+// ==========================================
+// VALIDATION SCHEMAS
+// ==========================================
+const purchasePanelSchema = {
+  body: z.object({
+    plan: z.string().min(1, 'Plan is required'),
+    price: z.number().positive('Price must be a positive number'),
+    panelName: z.string().min(3, 'Panel name must be at least 3 characters'),
+    subdomain: z.string().min(3, 'Subdomain must be at least 3 characters').regex(/^[a-z0-9-]+$/, 'Subdomain can only contain lowercase letters, numbers, and hyphens'),
+    adminUsername: z.string().min(3, 'Admin username must be at least 3 characters'),
+    adminPassword: z.string().min(6, 'Admin password must be at least 6 characters'),
+    idempotencyKey: z.string().min(1, 'Idempotency key is required')
+  }).strict()
+};
+
 // Apply panel context middleware to ALL child-panel routes
 router.use(identifyPanel);
 
@@ -43,7 +60,7 @@ router.post('/auth/login', childLogin);
 router.get('/auth/me', protect, getMe);
 
 // --- Main User Routes (Buying & Managing Panel) ---
-router.post('/purchase', protect, purchaseChildPanel);
+router.post('/purchase', protect, validate(purchasePanelSchema), purchaseChildPanel);
 
 // --- Reseller Panel Routes (Requires Reseller JWT) ---
 router.get('/me', protect, getMyPanel);
