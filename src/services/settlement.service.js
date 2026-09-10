@@ -6,8 +6,9 @@ import { logger } from '../utils/logger.js';
  * Centralized, Idempotent Payment Settlement
  * @param {string} paymentId - The internal UUID of the payment
  * @param {string} source - Who is settling it (e.g., 'pesajet_webhook', 'cron_recovery', 'admin')
+ * @param {boolean} isAdminOverride - Bypasses gateway locks for manual admin approval
  */
-export const settlePayment = async (paymentId, source = 'unknown') => {
+export const settlePayment = async (paymentId, source = 'unknown', isAdminOverride = false) => {
   if (!paymentId) throw new Error('Payment ID is required for settlement.');
   
   const paymentRef = getRef(`payments/${paymentId}`);
@@ -20,9 +21,9 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
   
   let paymentData = paymentSnap.val();
   
-  // 1. Idempotency Check: If already completed, do nothing.
-  if (paymentData.status === 'completed') {
-    logger.info(`[Settlement] DUPLICATE PREVENTED: Payment ${paymentId} is already completed.`);
+  // 1. Idempotency Check: If already completed/approved, do nothing.
+  if (paymentData.status === 'completed' || paymentData.status === 'approved') {
+    logger.info(`[Settlement] DUPLICATE PREVENTED: Payment ${paymentId} is already completed/approved.`);
     return { success: true, alreadySettled: true };
   }
   
@@ -33,9 +34,8 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
   
   // ==========================================
   // 1.5. ATOMIC GATEWAY REFERENCE LOCK
-  // Prevents double-crediting if multiple payment records share the same gatewayReference
   // ==========================================
-  if (paymentData.gatewayReference) {
+  if (paymentData.gatewayReference && !isAdminOverride) { // FIX: Admin can bypass this lock
     const gwLockRef = getRef(`gatewayLocks/${paymentData.gatewayReference}`);
     const gwLockResult = await gwLockRef.transaction((c) => {
       if (!c) return { paymentId, lockedAt: Date.now() };
@@ -69,7 +69,7 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
   } else if (paymentData.status === 'processing') {
     // If processing, only take over if stale (> 2 minutes)
     const age = Date.now() - (paymentData.processingStartedAt || 0);
-    if (age < 120000) {
+    if (age < 120000 && !isAdminOverride) { // FIX: Admin can bypass the 2-minute wait
       return { success: false, message: 'Payment is currently being processed' };
     }
     
@@ -77,7 +77,7 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     const takeoverRes = await paymentRef.transaction((p) => {
       if (p && p.status === 'processing') {
         const currentAge = Date.now() - (p.processingStartedAt || 0);
-        if (currentAge < 120000) return; // Abort if someone else just took over
+        if (currentAge < 120000 && !isAdminOverride) return; // Abort if someone else just took over
         p.processingStartedAt = Date.now(); // Reset timer
         return p;
       }
@@ -107,7 +107,7 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     }
     
     u.balance = (u.balance || 0) + totalCreditUSD;
-    u.totalDeposited = (u.totalDeposited || 0) + totalCreditUSD; // FIX: Update totalDeposited for Admin Panel
+    u.totalDeposited = (u.totalDeposited || 0) + totalCreditUSD; // Update totalDeposited for Admin Panel
     
     u.walletCredits = u.walletCredits || {};
     u.walletCredits[paymentId] = {
@@ -153,11 +153,16 @@ export const settlePayment = async (paymentId, source = 'unknown') => {
     settlementSource: source
   });
   
-  // FIX: UPDATE THE TRANSACTION RECORD SO FRONTEND AND ADMIN PANEL SHOW IT AS COMPLETED
+  // FIX: UPDATE THE TRANSACTION RECORD
   await getRef(`transactions/${paymentId}`).update({
     status: 'completed',
     completedAt: new Date().toISOString()
   });
+
+  // FIX: UPDATE IDEMPOTENCY STATUS TO COMPLETED
+  if (paymentData.idempotencyKey) {
+    await getRef(`paymentIdempotency/${userId}/${paymentData.idempotencyKey}`).update({ status: 'completed' });
+  }
 
   logger.success(`[Settlement] Payment ${paymentId} settled successfully via ${source}. Credited $${totalCreditUSD}.`);
   return { success: true, message: 'Payment settled successfully' };
