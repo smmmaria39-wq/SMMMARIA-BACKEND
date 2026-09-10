@@ -36,9 +36,38 @@ const logWalletTransaction = async (userId, type, amount, description, source = 
 export const purchaseChildPanel = async (req, res, next) => {
     try {
         const userId = req.user.id;
-        const { plan, price, panelName, subdomain, adminUsername, adminPassword } = req.body;
+        const { plan, price, panelName, subdomain, adminUsername, adminPassword, idempotencyKey } = req.body;
+
+        // ==========================================
+        // 1. IDEMPOTENCY CHECK (Anti-Double Click)
+        // ==========================================
+        if (!idempotencyKey) {
+            return errorResponse(res, 'Idempotency key is required', 400);
+        }
+
+        const idempotencyRef = getRef(`paymentIdempotency/${userId}/${idempotencyKey}`);
+        const idempotencyClaim = await idempotencyRef.transaction((current) => {
+            if (current && current.panelId) return; // Abort - already exists and is claimed
+            return { status: 'pending', createdAt: Date.now() };
+        });
+
+        if (!idempotencyClaim.committed) {
+            // Transaction aborted because it already exists
+            const existingSnap = await idempotencyRef.get();
+            const existingData = existingSnap.val();
+            
+            if (existingData && existingData.panelId) {
+                const panelSnap = await getRef(`childPanels/${existingData.panelId}`).get();
+                if (panelSnap.exists()) {
+                    const p = panelSnap.val();
+                    return successResponse(res, 'Panel already purchased successfully!', { panelId: existingData.panelId, subdomain: p.info.subdomain, panelName: p.info.panelName }, 200);
+                }
+            }
+            return errorResponse(res, 'A panel purchase request is already being processed. Please wait.', 200);
+        }
 
         if (!plan || !price || !panelName || !subdomain || !adminUsername || !adminPassword) {
+            await idempotencyRef.remove(); // Release lock so user can try again
             return errorResponse(res, 'Please provide plan, price, panel name, subdomain, and admin credentials', 400);
         }
 
@@ -46,6 +75,7 @@ export const purchaseChildPanel = async (req, res, next) => {
 
         const subdomainSnap = await getRef('childPanels').orderByChild('info/subdomain').equalTo(cleanSubdomain).get();
         if (subdomainSnap.exists()) {
+            await idempotencyRef.remove(); // Release lock so user can try again
             return errorResponse(res, 'This subdomain is already taken. Please choose another.', 400);
         }
 
@@ -62,6 +92,7 @@ export const purchaseChildPanel = async (req, res, next) => {
         });
 
         if (!hasSufficientFunds) {
+            await idempotencyRef.remove(); // Release lock so user can try again
             return errorResponse(res, 'Insufficient wallet balance to purchase this panel.', 400);
         }
 
@@ -96,6 +127,9 @@ export const purchaseChildPanel = async (req, res, next) => {
         };
 
         await getRef(`childPanels/${panelId}`).set(panelData);
+
+        // FIX: Link the panelId to the idempotency key to complete the transaction
+        await idempotencyRef.update({ panelId: panelId });
 
         await getRef(`users/${userId}`).update({ role: 'reseller', childPanelId: panelId });
 
