@@ -391,28 +391,6 @@ export const checkPendingPayments = async () => {
         continue;
       }
 
-      // FIX: CLEANUP OLD STALE PENDING PAYMENTS
-      // 5 minutes (300000 ms). Do not change this value.
-      const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
-      if (paymentAge > 300000) { 
-        logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 5 minutes. Rejecting.`);
-        // FIX: Check if the transaction was committed before updating the transaction record
-        const staleResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
-          if (p && p.status === 'pending') {
-            p.status = 'rejected';
-            p.failureReason = 'Stale pending payment (expired)';
-            return p;
-          }
-          return;
-        });
-        
-        if (staleResult.committed) {
-          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
-        }
-        continue;
-      }
-
       // Check for duplicate gateway references
       const dupSnap = await getRef('payments').orderByChild('gatewayReference').equalTo(currentPayment.gatewayReference).get();
       let isDuplicate = false;
@@ -428,7 +406,6 @@ export const checkPendingPayments = async () => {
 
       if (isDuplicate) {
         logger.info(`[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`);
-        // FIX: Check if the transaction was committed before updating the transaction record
         const dupResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
@@ -488,7 +465,6 @@ export const checkPendingPayments = async () => {
           await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
         }
       } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
-        // FIX: Check if the transaction was committed before updating the transaction record
         const rejectResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
@@ -501,6 +477,25 @@ export const checkPendingPayments = async () => {
         if (rejectResult.committed) {
           await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
           if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+        }
+      } else {
+        // FIX: Only reject as stale if the gateway is still PENDING/UNKNOWN after 15 minutes
+        const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
+        if (paymentAge > 900000) { // 15 minutes
+          logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 15 minutes. Rejecting.`);
+          const staleResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+            if (p && p.status === 'pending') {
+              p.status = 'rejected';
+              p.failureReason = 'Stale pending payment (expired)';
+              return p;
+            }
+            return;
+          });
+          
+          if (staleResult.committed) {
+            await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+            if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+          }
         }
       }
     }
