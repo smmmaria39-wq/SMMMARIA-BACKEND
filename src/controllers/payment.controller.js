@@ -101,7 +101,8 @@ export const createDeposit = async (req, res, next) => {
       const lockResult = await lockRef.transaction((currentLock) => {
         if (currentLock) {
           const lockAge = Date.now() - (currentLock.lockedAt || 0);
-          if (lockAge < (5 * 60 * 1000)) return; // Abort - locked
+          // FIX: Changed to 2 minutes (120,000 ms) to match the expiration time
+          if (lockAge < 120000) return; // Abort - locked
         }
         return { lockedAt: Date.now() };
       });
@@ -479,10 +480,10 @@ export const checkPendingPayments = async () => {
           if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
         }
       } else {
-        // FIX: Only reject as stale if the gateway is still PENDING/UNKNOWN after 15 minutes
+        // FIX: Expire if the gateway is still PENDING/UNKNOWN after 2 minutes
         const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
-        if (paymentAge > 900000) { // 15 minutes
-          logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 15 minutes. Rejecting.`);
+        if (paymentAge > 120000) { // 2 minutes
+          logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 2 minutes. Rejecting.`);
           const staleResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
             if (p && p.status === 'pending') {
               p.status = 'rejected';
@@ -520,6 +521,7 @@ export const approvePayment = async (req, res, next) => {
     return successResponse(res, 'Payment approved and wallet credited successfully');
   } catch (error) { next(error); }
 };
+
 export const rejectPayment = async (req, res, next) => {
   try {
     const { id } = req.params;
