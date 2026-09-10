@@ -135,12 +135,13 @@ export const createDeposit = async (req, res, next) => {
     // ==========================================
     const updates = {};
     updates[`payments/${paymentId}`] = paymentData;
-    // FIX: Added `method` field to transaction record for frontend display
     updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString(), method: method };
     await getRef().update(updates);
 
     // PATH 1: MANUAL PAYMENTS
     if (method === 'manual') {
+      // FIX: Update idempotency status
+      await idempotencyRef.update({ status: 'initiated' });
       return successResponse(res, 'Deposit request created! Please send your receipt via WhatsApp.', paymentData, 201);
     }
 
@@ -169,11 +170,15 @@ export const createDeposit = async (req, res, next) => {
           redirectUrl: result.data.redirect_url
         });
 
+        // FIX: Update idempotency status
+        await idempotencyRef.update({ status: 'initiated' });
+
         return successResponse(res, 'Card payment initiated', { paymentId, reference: marzpayReference, redirect_url: result.data.redirect_url }, 201);
       } catch (apiError) {
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
-        await getRef(`paymentIdempotency/${userId}/${idempotencyKey}`).remove(); // Release idempotency lock so user can retry
+        // FIX: Update idempotency status to rejected
+        await idempotencyRef.update({ status: 'rejected' });
         return errorResponse(res, `Card payment failed: ${apiError.message}`, 400);
       }
     }
@@ -205,17 +210,23 @@ export const createDeposit = async (req, res, next) => {
                     gateway: "pesajet",
                     gatewayReference: gatewayPayload.reference
                 });
+                // FIX: Update idempotency status
+                await idempotencyRef.update({ status: 'initiated' });
                 return successResponse(res, 'Payment request sent. Please approve the prompt on your phone. Waiting for confirmation...', { status: 'pending' }, 201);
             }
             throw apiError;
         }
+
+        // FIX: Update idempotency status
+        await idempotencyRef.update({ status: 'initiated' });
 
         return successResponse(res, 'Payment request sent to your phone. Please approve the prompt.', paymentData, 201);
       } catch (apiError) {
         await getRef(`users/${userId}/activeDeposit`).remove(); // Release lock on failure
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
-        await getRef(`paymentIdempotency/${userId}/${idempotencyKey}`).remove(); // Release idempotency lock so user can retry
+        // FIX: Update idempotency status to rejected
+        await idempotencyRef.update({ status: 'rejected' });
         return errorResponse(res, `Payment failed: ${apiError.message}`, 400);
       }
     }
@@ -421,6 +432,19 @@ export const checkPendingPayments = async () => {
         });
         await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
         if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
+        continue;
+      }
+
+      // FIX: ATOMIC GATEWAY CLAIM FOR CRON WORKERS
+      const gwClaimRef = getRef(`gatewayClaims/${currentPayment.gatewayReference}`);
+      const gwClaimResult = await gwClaimRef.transaction((c) => {
+        if (!c) return { claimedAt: Date.now(), paymentId: currentPayment.id };
+        if (Date.now() - c.claimedAt > 60000) return { claimedAt: Date.now(), paymentId: currentPayment.id };
+        return; 
+      });
+
+      if (!gwClaimResult.committed) {
+        logger.info(`[Cron] Gateway reference ${currentPayment.gatewayReference} already claimed by another worker. Skipping.`);
         continue;
       }
 
