@@ -140,7 +140,6 @@ export const createDeposit = async (req, res, next) => {
 
     // PATH 1: MANUAL PAYMENTS
     if (method === 'manual') {
-      // FIX: Update idempotency status
       await idempotencyRef.update({ status: 'initiated' });
       return successResponse(res, 'Deposit request created! Please send your receipt via WhatsApp.', paymentData, 201);
     }
@@ -170,14 +169,12 @@ export const createDeposit = async (req, res, next) => {
           redirectUrl: result.data.redirect_url
         });
 
-        // FIX: Update idempotency status
         await idempotencyRef.update({ status: 'initiated' });
 
         return successResponse(res, 'Card payment initiated', { paymentId, reference: marzpayReference, redirect_url: result.data.redirect_url }, 201);
       } catch (apiError) {
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
-        // FIX: Update idempotency status to rejected
         await idempotencyRef.update({ status: 'rejected' });
         return errorResponse(res, `Card payment failed: ${apiError.message}`, 400);
       }
@@ -210,14 +207,12 @@ export const createDeposit = async (req, res, next) => {
                     gateway: "pesajet",
                     gatewayReference: gatewayPayload.reference
                 });
-                // FIX: Update idempotency status
                 await idempotencyRef.update({ status: 'initiated' });
                 return successResponse(res, 'Payment request sent. Please approve the prompt on your phone. Waiting for confirmation...', { status: 'pending' }, 201);
             }
             throw apiError;
         }
 
-        // FIX: Update idempotency status
         await idempotencyRef.update({ status: 'initiated' });
 
         return successResponse(res, 'Payment request sent to your phone. Please approve the prompt.', paymentData, 201);
@@ -225,7 +220,6 @@ export const createDeposit = async (req, res, next) => {
         await getRef(`users/${userId}/activeDeposit`).remove(); // Release lock on failure
         await getRef(`payments/${paymentId}`).update({ status: 'rejected', failureReason: apiError.message });
         await getRef(`transactions/${paymentId}`).update({ status: 'rejected' });
-        // FIX: Update idempotency status to rejected
         await idempotencyRef.update({ status: 'rejected' });
         return errorResponse(res, `Payment failed: ${apiError.message}`, 400);
       }
@@ -265,7 +259,8 @@ export const pesajetWebhook = async (req, res, next) => {
         }
       } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
         for (const key of paymentKeys) {
-          await getRef(`payments/${key}`).transaction((p) => {
+          // FIX: Check if the transaction was committed before updating the transaction record
+          const txResult = await getRef(`payments/${key}`).transaction((p) => {
             if (p && (p.status === 'pending' || p.status === 'processing')) { 
               p.status = 'rejected'; 
               p.failureReason = status; 
@@ -273,7 +268,10 @@ export const pesajetWebhook = async (req, res, next) => {
             }
             return;
           });
-          await getRef(`transactions/${key}`).update({ status: 'rejected' });
+          
+          if (txResult.committed) {
+            await getRef(`transactions/${key}`).update({ status: 'rejected' });
+          }
         }
         const userId = payments[paymentKeys[0]].userId;
         if (userId) await getRef(`users/${userId}/activeDeposit`).remove();
@@ -312,7 +310,8 @@ export const marzPayWebhook = async (req, res, next) => {
       }
     } else if (event_type === "collection.failed" || collection.status === "failed") {
       for (const key of paymentKeys) {
-        await getRef(`payments/${key}`).transaction((p) => {
+        // FIX: Check if the transaction was committed before updating the transaction record
+        const txResult = await getRef(`payments/${key}`).transaction((p) => {
           if (p && (p.status === 'pending' || p.status === 'processing')) { 
             p.status = 'rejected'; 
             p.failureReason = collection.status; 
@@ -320,7 +319,10 @@ export const marzPayWebhook = async (req, res, next) => {
           }
           return;
         });
-        await getRef(`transactions/${key}`).update({ status: 'rejected' });
+        
+        if (txResult.committed) {
+          await getRef(`transactions/${key}`).update({ status: 'rejected' });
+        }
       }
       const userId = payments[paymentKeys[0]].userId;
       if (userId) await getRef(`users/${userId}/activeDeposit`).remove();
@@ -394,7 +396,8 @@ export const checkPendingPayments = async () => {
       const paymentAge = Date.now() - new Date(currentPayment.createdAt).getTime();
       if (paymentAge > 300000) { 
         logger.info(`[Cron Reconciliation] Found stale pending payment ${currentPayment.id} older than 5 minutes. Rejecting.`);
-        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+        // FIX: Check if the transaction was committed before updating the transaction record
+        const staleResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
             p.failureReason = 'Stale pending payment (expired)';
@@ -402,8 +405,11 @@ export const checkPendingPayments = async () => {
           }
           return;
         });
-        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
+        
+        if (staleResult.committed) {
+          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+        }
         continue;
       }
 
@@ -422,7 +428,8 @@ export const checkPendingPayments = async () => {
 
       if (isDuplicate) {
         logger.info(`[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`);
-        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+        // FIX: Check if the transaction was committed before updating the transaction record
+        const dupResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
             p.failureReason = 'Duplicate gateway transaction';
@@ -430,8 +437,11 @@ export const checkPendingPayments = async () => {
           }
           return;
         });
-        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
+        
+        if (dupResult.committed) {
+          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+        }
         continue;
       }
 
@@ -478,7 +488,8 @@ export const checkPendingPayments = async () => {
           await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
         }
       } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
-        await getRef(`payments/${currentPayment.id}`).transaction((p) => {
+        // FIX: Check if the transaction was committed before updating the transaction record
+        const rejectResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
           if (p && p.status === 'pending') {
             p.status = 'rejected';
             p.failureReason = gatewayStatus;
@@ -486,8 +497,11 @@ export const checkPendingPayments = async () => {
           }
           return;
         });
-        await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-        if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove(); // Release lock
+        
+        if (rejectResult.committed) {
+          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
+          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+        }
       }
     }
   } catch (error) { 
