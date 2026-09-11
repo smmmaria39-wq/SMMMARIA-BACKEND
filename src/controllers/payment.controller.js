@@ -1,39 +1,171 @@
 // ===============================================
 // Payment Controller
 // ===============================================
-
-import { getRef } from '../database/firebase.js';
-import { generateUUID } from '../utils/helpers.js';
-import { successResponse, errorResponse } from '../utils/response.js';
-import { logger } from '../utils/logger.js';
-import { settlePayment } from '../services/settlement.service.js';
+import crypto from "node:crypto";
+import { getRef } from "../database/firebase.js";
+import { generateUUID } from "../utils/helpers.js";
+import { successResponse, errorResponse } from "../utils/response.js";
+import { logger } from "../utils/logger.js";
+import { settlePayment } from "../services/settlement.service.js";
 
 // Exchange Rate: 1 USD = 3930 UGX
 const USD_TO_UGX_RATE = 3930;
 
 // ==========================================
-// HELPER: Process MTN/Airtel via PesaJet API
+// TELECOM & CARRIER DETECTION (Uganda Guidelines)
 // ==========================================
-const processPesaJetPayment = async (payload) => {
-  const PESAJET_API_KEY = process.env.PESAJET_API_KEY;
-  const PESAJET_API_URL = process.env.PESAJET_API_URL || 'https://api.pesajet.com/v1/transactions';
+/**
+ * Detect carrier for a Ugandan phone number
+ * MTN: 077, 078, 076, 079, 039
+ * Airtel: 070, 075, 074
+ * Cross-Network: 073 cuts across MTN & Airtel (returns null, caller must specify)
+ */
+export const detectProvider = (phoneNumber) => {
+  if (!phoneNumber) return null;
+  const cleaned = phoneNumber.replace(/[\s\-\+]/g, "");
+  if (/^(256|0)?(77|78|76|79|39)\d{7}$/.test(cleaned)) return "mtn";
+  if (/^(256|0)?(70|75|74)\d{7}$/.test(cleaned)) return "airtel";
+  return null;
+};
 
-  if (!PESAJET_API_KEY) throw new Error('PesaJet API key is not configured.');
-  
-  const response = await fetch(PESAJET_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': PESAJET_API_KEY },
-    body: JSON.stringify(payload)
+export const formatPhoneNumber = (phoneNumber) => {
+  if (!phoneNumber) return "";
+  let cleaned = phoneNumber.replace(/[\s\-\(\)\+]/g, "");
+  if (cleaned.startsWith("0")) cleaned = "256" + cleaned.slice(1);
+  else if (!cleaned.startsWith("256")) cleaned = "256" + cleaned;
+  return "+" + cleaned;
+};
+
+// ==========================================
+// STATUS NORMALIZATION HELPERS
+// ==========================================
+export const isPaymentSuccessful = (status, event) => {
+  const s = String(status || "")
+    .toLowerCase()
+    .trim();
+  const e = String(event || "")
+    .toLowerCase()
+    .trim();
+  return (
+    s === "completed" ||
+    s === "success" ||
+    s === "successful" ||
+    e === "payment.completed"
+  );
+};
+
+export const isPaymentFailed = (status, event) => {
+  const s = String(status || "")
+    .toLowerCase()
+    .trim();
+  const e = String(event || "")
+    .toLowerCase()
+    .trim();
+  return (
+    s === "failed" ||
+    s === "expired" ||
+    s === "cancelled" ||
+    s === "rejected" ||
+    e === "payment.failed" ||
+    e === "payment.expired"
+  );
+};
+
+// ==========================================
+// PESAJET CONFIG & CLIENT
+// ==========================================
+export const getPesajetConfig = () => {
+  const apiKey = process.env.PESAJET_API_KEY;
+  let rawUrl = (
+    process.env.PESAJET_API_BASE_URL ||
+    process.env.PESAJET_API_URL ||
+    "https://api.pesajet.com/api/v1"
+  ).trim();
+  // Strip trailing slashes, /payments, /transactions
+  const baseUrl = rawUrl
+    .replace(/\/+$/, "")
+    .replace(/\/(payments|transactions)$/, "");
+  return {
+    apiKey,
+    baseUrl,
+    paymentsUrl: `${baseUrl}/payments`,
+  };
+};
+
+const processPesaJetPayment = async (payload) => {
+  const config = getPesajetConfig();
+  if (!config.apiKey) throw new Error("PesaJet API key is not configured.");
+
+  const response = await fetch(config.paymentsUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": config.apiKey,
+      "x-api-key": config.apiKey,
+    },
+    body: JSON.stringify(payload),
   });
 
   const responseText = await response.text();
+  let result;
   try {
-    const result = JSON.parse(responseText);
-    if (!response.ok) throw new Error(result.message || 'PesaJet API declined.');
-    return result;
+    result = JSON.parse(responseText);
   } catch (e) {
-    throw new Error(`PesaJet Error: ${responseText}`);
+    throw new Error(`PesaJet Error (HTTP ${response.status}): ${responseText}`);
   }
+
+  if (!response.ok) {
+    const errorMsg =
+      result?.error?.message ||
+      result?.message ||
+      `PesaJet API declined (HTTP ${response.status})`;
+    const err = new Error(errorMsg);
+    err.status = response.status;
+    err.details = result;
+    throw err;
+  }
+
+  return result;
+};
+
+export const getPesajetPaymentStatus = async (transactionIdOrRef) => {
+  const config = getPesajetConfig();
+  if (!config.apiKey) throw new Error("PesaJet API key is not configured.");
+
+  const response = await fetch(
+    `${config.paymentsUrl}/${encodeURIComponent(transactionIdOrRef)}`,
+    {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": config.apiKey,
+        "x-api-key": config.apiKey,
+      },
+    },
+  );
+
+  const responseText = await response.text();
+  let result;
+  try {
+    result = JSON.parse(responseText);
+  } catch (e) {
+    throw new Error(
+      `PesaJet Query Error (HTTP ${response.status}): ${responseText}`,
+    );
+  }
+
+  if (!response.ok) {
+    const errorMsg =
+      result?.error?.message ||
+      result?.message ||
+      `PesaJet Query Error (HTTP ${response.status})`;
+    const err = new Error(errorMsg);
+    err.status = response.status;
+    err.details = result;
+    throw err;
+  }
+
+  return result;
 };
 
 /**
@@ -45,38 +177,64 @@ export const createDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
     const { amount, method, email, phoneNumber, idempotencyKey } = req.body;
-    
+
     // ==========================================
     // 1. VALIDATE EVERYTHING BEFORE DB CREATION
     // ==========================================
     const parsedAmount = Number(amount);
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-      return errorResponse(res, 'Amount must be a valid number greater than 0', 400);
+      return errorResponse(
+        res,
+        "Amount must be a valid number greater than 0",
+        400,
+      );
     }
 
-    const validMethods = ['manual', 'card', 'mtn', 'airtel'];
+    const validMethods = ["manual", "card", "mtn", "airtel"];
     if (!validMethods.includes(method)) {
-      return errorResponse(res, 'Invalid payment method selected.', 400);
+      return errorResponse(res, "Invalid payment method selected.", 400);
     }
 
     if (!idempotencyKey) {
-      return errorResponse(res, 'Idempotency key is required', 400);
+      return errorResponse(res, "Idempotency key is required", 400);
     }
 
-    if ((method === 'mtn' || method === 'airtel') && !phoneNumber) {
-      return errorResponse(res, 'Phone number is required', 400);
+    if ((method === "mtn" || method === "airtel") && !phoneNumber) {
+      return errorResponse(res, "Phone number is required", 400);
     }
 
-    // Normalize Phone Number Early
-    let formattedPhone = '';
-    if (method === 'mtn' || method === 'airtel') {
-      formattedPhone = phoneNumber.replace(/\s+/g, '').replace(/^\+/, '');
-      if (formattedPhone.startsWith('0')) formattedPhone = '256' + formattedPhone.substring(1);
-      else if (!formattedPhone.startsWith('256')) formattedPhone = '256' + formattedPhone;
-      formattedPhone = '+' + formattedPhone;
-      
-      if (formattedPhone.length < 12) {
-        return errorResponse(res, 'Invalid Ugandan phone number format', 400);
+    // Normalize and Validate Phone Number Early
+    let formattedPhone = "";
+    if (method === "mtn" || method === "airtel") {
+      formattedPhone = formatPhoneNumber(phoneNumber);
+      if (formattedPhone.length < 13) {
+        return errorResponse(
+          res,
+          "Invalid Ugandan phone number format (e.g. 07XXXXXXXX or +2567XXXXXXXX)",
+          400,
+        );
+      }
+
+      const detected = detectProvider(formattedPhone);
+      const isCrossNetwork = /^(?:\+?256|0)?73\d{7}$/.test(
+        formattedPhone.replace(/\+/g, ""),
+      );
+
+      if (isCrossNetwork) {
+        // 073 cuts across MTN and Airtel, requires explicit provider selection
+        if (method !== "mtn" && method !== "airtel") {
+          return errorResponse(
+            res,
+            "073 numbers cut across networks and require selecting either MTN or Airtel provider",
+            400,
+          );
+        }
+      } else if (detected && detected !== method) {
+        return errorResponse(
+          res,
+          `Phone number ${phoneNumber} belongs to ${detected.toUpperCase()}, but ${method.toUpperCase()} was selected.`,
+          400,
+        );
       }
     }
 
@@ -84,72 +242,132 @@ export const createDeposit = async (req, res, next) => {
     // 2. IDEMPOTENCY CHECK (ATOMIC & SAFE)
     // ==========================================
     const paymentId = generateUUID();
-    const idempotencyRef = getRef(`paymentIdempotency/${userId}/${idempotencyKey}`);
-    
+    const idempotencyRef = getRef(
+      `paymentIdempotency/${userId}/${idempotencyKey}`,
+    );
+
     const idempotencyClaim = await idempotencyRef.transaction((current) => {
       if (current && current.paymentId) return; // Abort - already exists and is claimed
-      return { status: 'pending', createdAt: Date.now(), paymentId: paymentId };
+      return { status: "pending", createdAt: Date.now(), paymentId: paymentId };
     });
 
     if (!idempotencyClaim.committed) {
       const existingSnap = await idempotencyRef.get();
       const existingData = existingSnap.val();
-      
+
       if (existingData && existingData.paymentId) {
-        const paymentSnap = await getRef(`payments/${existingData.paymentId}`).get();
+        const paymentSnap = await getRef(
+          `payments/${existingData.paymentId}`,
+        ).get();
         if (paymentSnap.exists()) {
           const p = paymentSnap.val();
           // Only clear if genuinely safe to retry (terminal failure states)
-          if (p.status === 'rejected' || p.status === 'cancelled' || p.status === 'expired') {
+          if (
+            p.status === "rejected" ||
+            p.status === "cancelled" ||
+            p.status === "expired"
+          ) {
             await idempotencyRef.remove();
-            return errorResponse(res, 'Previous attempt failed. Please try again.', 200);
+            return errorResponse(
+              res,
+              "Previous attempt failed. Please try again.",
+              200,
+            );
           }
           // If active or completed, return the existing payment info
-          logger.info(`[Duplicate Prevented] Idempotency key match for active payment ${p.id}`);
-          if (p.method === 'card' && p.redirectUrl) {
-            return successResponse(res, 'Card payment already initiated', { paymentId: p.id, reference: p.gatewayReference, redirect_url: p.redirectUrl }, 200);
+          logger.info(
+            `[Duplicate Prevented] Idempotency key match for active payment ${p.id}`,
+          );
+          if (p.method === "card" && p.redirectUrl) {
+            return successResponse(
+              res,
+              "Card payment already initiated",
+              {
+                paymentId: p.id,
+                reference: p.gatewayReference,
+                redirect_url: p.redirectUrl,
+              },
+              200,
+            );
           }
-          return successResponse(res, 'Payment already initiated', p, 200);
+          return successResponse(res, "Payment already initiated", p, 200);
         }
       }
-      return errorResponse(res, 'A deposit request is already being processed. Please wait.', 200);
+      return errorResponse(
+        res,
+        "A deposit request is already being processed. Please wait.",
+        200,
+      );
     }
 
     // ==========================================
-    // 3. ACTIVE DEPOSIT LOCK (Check DB for active payments)
+    // 3. ACTIVE DEPOSIT LOCK (Check DB for active payments with staleness cleanup)
     // ==========================================
-    if (method === 'mtn' || method === 'airtel') {
-      const userPaymentsSnap = await getRef('payments').orderByChild('userId').equalTo(userId).get();
+    if (method === "mtn" || method === "airtel") {
+      const userPaymentsSnap = await getRef("payments")
+        .orderByChild("userId")
+        .equalTo(userId)
+        .get();
       if (userPaymentsSnap.exists()) {
         const userPayments = Object.values(userPaymentsSnap.val());
-        const activePayment = userPayments.find(p => (p.method === 'mtn' || p.method === 'airtel') && (p.status === 'pending' || p.status === 'processing'));
-        
+        const activePayment = userPayments.find(
+          (p) =>
+            (p.method === "mtn" || p.method === "airtel") &&
+            (p.status === "pending" || p.status === "processing"),
+        );
+
         if (activePayment) {
-          // Clear the idempotency claim we just created since we won't proceed with a new payment
-          await idempotencyRef.remove();
-          logger.info(`[Active Payment] User ${userId} already has active MTN/Airtel payment ${activePayment.id}`);
-          return successResponse(res, 'You already have a pending Mobile Money deposit. Please wait for it to expire or complete.', activePayment, 200);
+          const paymentAge =
+            Date.now() - new Date(activePayment.createdAt || 0).getTime();
+          // Stale active deposit (> 10 minutes): USSD prompt has expired; safely clean up lock
+          if (paymentAge > 600000) {
+            logger.info(
+              `[Active Deposit] Cleaning up stale deposit ${activePayment.id} (age: ${Math.round(paymentAge / 1000)}s) for user ${userId}`,
+            );
+            await getRef(`payments/${activePayment.id}`).update({
+              status: "expired",
+              failureReason: "Mobile money prompt expired",
+            });
+            await getRef(`transactions/${activePayment.id}`).update({
+              status: "expired",
+            });
+            await getRef(`users/${userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
+          } else {
+            // Clear the idempotency claim we just created since we won't proceed with a new payment
+            await idempotencyRef.remove();
+            logger.info(
+              `[Active Payment] User ${userId} already has active MTN/Airtel payment ${activePayment.id}`,
+            );
+            return successResponse(
+              res,
+              "You already have a pending Mobile Money deposit. Please complete the prompt on your phone or wait for it to expire.",
+              activePayment,
+              200,
+            );
+          }
         }
       }
-      
+
       // Create the activeDeposit lock referencing the paymentId
       const lockRef = getRef(`users/${userId}/activeDeposit`);
-      await lockRef.set({ 
-        lockedAt: Date.now(), 
+      await lockRef.set({
+        lockedAt: Date.now(),
         paymentId: paymentId,
-        status: 'pending'
+        status: "pending",
       });
     }
 
     const bonus = 0.05;
     const totalCredit = parseFloat(parsedAmount) + bonus;
     const amountInUGX = Math.round(parsedAmount * USD_TO_UGX_RATE);
-    
+
     const paymentData = {
       id: paymentId,
       userId,
       method,
-      status: 'pending',
+      status: "pending",
       createdAt: new Date().toISOString(),
       amount: parsedAmount,
       bonus: bonus,
@@ -159,100 +377,195 @@ export const createDeposit = async (req, res, next) => {
       totalCreditUSD: totalCredit,
       amountUGX: amountInUGX,
       exchangeRate: USD_TO_UGX_RATE,
-      idempotencyKey: idempotencyKey
+      idempotencyKey: idempotencyKey,
     };
-    
+
     // ==========================================
     // 4. ATOMIC SAVE BEFORE GATEWAY CALL
     // ==========================================
     const updates = {};
     updates[`payments/${paymentId}`] = paymentData;
-    updates[`transactions/${paymentId}`] = { id: paymentId, userId, type: 'deposit', amount: totalCredit, status: 'pending', date: new Date().toISOString(), method: method };
+    updates[`transactions/${paymentId}`] = {
+      id: paymentId,
+      userId,
+      type: "deposit",
+      amount: totalCredit,
+      status: "pending",
+      date: new Date().toISOString(),
+      method: method,
+    };
     await getRef().update(updates);
 
     // ==========================================
     // 5. HANDLE GATEWAY CALLS (SAFE FAILURES)
     // ==========================================
-    
+
     // PATH 1: MANUAL PAYMENTS
-    if (method === 'manual') {
-      await idempotencyRef.update({ status: 'initiated' });
-      return successResponse(res, 'Deposit request created! Please send your receipt via WhatsApp.', paymentData, 201);
+    if (method === "manual") {
+      await idempotencyRef.update({ status: "initiated" });
+      return successResponse(
+        res,
+        "Deposit request created! Please send your receipt via WhatsApp.",
+        paymentData,
+        201,
+      );
     }
 
     // PATH 2: CARD PAYMENTS (MARZPAY)
-    if (method === 'card') {
+    if (method === "card") {
       try {
-        const MARZPAY_API_URL = process.env.MARZPAY_API_URL || 'https://wallet.wearemarz.com/api/v1';
+        const MARZPAY_API_URL =
+          process.env.MARZPAY_API_URL || "https://wallet.wearemarz.com/api/v1";
         const MARZPAY_API_CREDENTIALS = process.env.MARZPAY_API_CREDENTIALS;
         const MARZPAY_CALLBACK_URL = process.env.MARZPAY_CALLBACK_URL;
 
-        if (!MARZPAY_API_CREDENTIALS) throw new Error('MarzPay API credentials missing.');
+        if (!MARZPAY_API_CREDENTIALS)
+          throw new Error("MarzPay API credentials missing.");
 
         const marzpayReference = paymentId; // Deterministic reference
         const response = await fetch(`${MARZPAY_API_URL}/collect-money`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${MARZPAY_API_CREDENTIALS}` },
-          body: JSON.stringify({ amount: amountInUGX, method: "card", reference: marzpayReference, country: "UG", description: "SMMMARIA Wallet Deposit", callback_url: MARZPAY_CALLBACK_URL })
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Basic ${MARZPAY_API_CREDENTIALS}`,
+          },
+          body: JSON.stringify({
+            amount: amountInUGX,
+            method: "card",
+            reference: marzpayReference,
+            country: "UG",
+            description: "SMMMARIA Wallet Deposit",
+            callback_url: MARZPAY_CALLBACK_URL,
+          }),
         });
         const result = await response.json();
 
-        if (!response.ok || !result.data || !result.data.redirect_url) throw new Error(result.message || 'MarzPay did not return redirect URL.');
+        if (!response.ok || !result.data || !result.data.redirect_url)
+          throw new Error(
+            result.message || "MarzPay did not return redirect URL.",
+          );
 
         await getRef(`payments/${paymentId}`).update({
           gateway: "marzpay",
           gatewayReference: marzpayReference,
-          redirectUrl: result.data.redirect_url
+          redirectUrl: result.data.redirect_url,
         });
 
-        await idempotencyRef.update({ status: 'initiated' });
+        await idempotencyRef.update({ status: "initiated" });
 
-        return successResponse(res, 'Card payment initiated', { paymentId, reference: marzpayReference, redirect_url: result.data.redirect_url }, 201);
+        return successResponse(
+          res,
+          "Card payment initiated",
+          {
+            paymentId,
+            reference: marzpayReference,
+            redirect_url: result.data.redirect_url,
+          },
+          201,
+        );
       } catch (apiError) {
-        // FIX: Do NOT reject on unknown gateway failure. Keep as pending for webhook/cron recovery.
-        logger.error(`[Gateway Unknown] Card payment ${paymentId} gateway call failed: ${apiError.message}. Left as pending.`);
-        await idempotencyRef.update({ status: 'initiated' });
-        return successResponse(res, 'Payment initiated. Waiting for gateway confirmation...', { paymentId, status: 'pending' }, 201);
+        logger.error(
+          `[Gateway Unknown] Card payment ${paymentId} gateway call failed: ${apiError.message}. Left as pending.`,
+        );
+        await idempotencyRef.update({ status: "initiated" });
+        return successResponse(
+          res,
+          "Payment initiated. Waiting for gateway confirmation...",
+          { paymentId, status: "pending" },
+          201,
+        );
       }
     }
 
     // PATH 3: MTN & AIRTEL (PESAJET)
-    if (method === 'mtn' || method === 'airtel') {
-      try {
-        let gatewayPayload = { 
-          type: "COLLECTION", 
-          amount: amountInUGX, 
-          currency: "UGX", 
-          phoneNumber: formattedPhone, 
-          provider: method, 
-          reference: paymentId.replace(/-/g, '') 
-        };
+    if (method === "mtn" || method === "airtel") {
+      const merchantRef = paymentId.replace(/-/g, "");
+      const gatewayPayload = {
+        type: "COLLECTION",
+        amount: amountInUGX,
+        currency: "UGX",
+        phoneNumber: formattedPhone,
+        provider: method,
+        reference: merchantRef,
+        description: "Wallet Deposit",
+        idempotencyKey: idempotencyKey,
+        metadata: {
+          userId,
+          paymentId,
+          amountUSD: parsedAmount,
+        },
+      };
 
-        let gatewayRef = '';
-        try {
-            const gatewayResponse = await processPesaJetPayment(gatewayPayload);
-            gatewayRef = gatewayResponse.transactionId || gatewayResponse.id || gatewayPayload.reference;
-        } catch (apiError) {
-            if (apiError.message.includes('Transaction state is ambiguous') || apiError.message.includes('system will poll for status')) {
-                gatewayRef = gatewayPayload.reference;
-            } else {
-                throw apiError; // Re-throw for outer catch
-            }
-        }
-        
+      try {
+        const gatewayResponse = await processPesaJetPayment(gatewayPayload);
+        const gatewayRef =
+          gatewayResponse.transactionId || gatewayResponse.id || merchantRef;
+
         await getRef(`payments/${paymentId}`).update({
-            gateway: "pesajet",
-            gatewayReference: gatewayRef
+          gateway: "pesajet",
+          gatewayReference: gatewayRef,
+          merchantReference: merchantRef,
         });
 
-        await idempotencyRef.update({ status: 'initiated' });
+        await idempotencyRef.update({ status: "initiated" });
 
-        return successResponse(res, 'Payment request sent to your phone. Please approve the prompt.', paymentData, 201);
+        return successResponse(
+          res,
+          "Payment request sent to your phone. Please approve the prompt.",
+          {
+            ...paymentData,
+            gatewayReference: gatewayRef,
+          },
+          201,
+        );
       } catch (apiError) {
-        // FIX: Do NOT reject on unknown gateway failure. Keep as pending for cron recovery.
-        logger.error(`[Gateway Unknown] MTN/Airtel payment ${paymentId} gateway call failed: ${apiError.message}. Left as pending.`);
-        await idempotencyRef.update({ status: 'initiated' });
-        return successResponse(res, 'Payment request sent. Waiting for gateway confirmation...', { paymentId, status: 'pending' }, 201);
+        logger.error(
+          `[PesaJet Initiation Failed] Payment ${paymentId}: ${apiError.message}`,
+        );
+
+        // Immediate Client / Validation / Auth errors (HTTP 4xx): Do NOT leave user trapped in zombie pending lock
+        const isClientOrAuthError =
+          apiError.status &&
+          apiError.status >= 400 &&
+          apiError.status < 500 &&
+          apiError.status !== 408;
+
+        if (isClientOrAuthError) {
+          await getRef(`payments/${paymentId}`).update({
+            status: "rejected",
+            failureReason: apiError.message,
+            rejectedAt: new Date().toISOString(),
+          });
+          await getRef(`transactions/${paymentId}`).update({
+            status: "rejected",
+          });
+          await getRef(`users/${userId}/activeDeposit`)
+            .remove()
+            .catch(() => {});
+          await idempotencyRef.remove().catch(() => {});
+
+          return errorResponse(
+            res,
+            apiError.message ||
+              "Payment request failed. Please check your details and try again.",
+            apiError.status || 400,
+          );
+        }
+
+        // For ambiguous network failures (timeouts/500), keep as pending for cron recovery
+        await getRef(`payments/${paymentId}`).update({
+          gateway: "pesajet",
+          gatewayReference: merchantRef,
+          merchantReference: merchantRef,
+        });
+        await idempotencyRef.update({ status: "initiated" });
+
+        return successResponse(
+          res,
+          "Payment request sent. Waiting for gateway confirmation...",
+          { paymentId, status: "pending" },
+          201,
+        );
       }
     }
   } catch (error) {
@@ -261,280 +574,626 @@ export const createDeposit = async (req, res, next) => {
 };
 
 // ==========================================
-// PESAJET WEBHOOK 
+// PESAJET WEBHOOK
 // ==========================================
 export const pesajetWebhook = async (req, res, next) => {
   try {
-    const { transactionId, status } = req.body;
-    if (!transactionId) return res.status(400).send('Transaction ID required');
+    const payload = req.body || {};
+    const { transactionId, status, event, reference } = payload;
 
-    const snapshot = await getRef('payments').orderByChild('gatewayReference').equalTo(transactionId).get();
-    if (snapshot.exists()) {
-      const payments = snapshot.val();
-      const paymentKeys = Object.keys(payments);
-      
-      if (status === 'SUCCESS' || status === 'COMPLETED' || status === 'SUCCESSFUL') {
-        await settlePayment(paymentKeys[0], 'pesajet_webhook');
-        
-        // Reject any duplicates safely
-        for (let i = 1; i < paymentKeys.length; i++) {
-          await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
-            if (p && (p.status === 'pending' || p.status === 'processing')) { 
-              p.status = 'rejected'; 
-              p.failureReason = 'Duplicate gateway transaction'; 
-              return p; 
-            }
-            return;
-          });
-        }
-      } else if (status === 'FAILED' || status === 'CANCELLED' || status === 'EXPIRED') {
-        for (const key of paymentKeys) {
-          const txResult = await getRef(`payments/${key}`).transaction((p) => {
-            if (p && (p.status === 'pending' || p.status === 'processing')) { 
-              p.status = 'rejected'; 
-              p.failureReason = status; 
-              return p; 
-            }
-            return;
-          });
-          
-          if (txResult.committed) {
-            await getRef(`transactions/${key}`).update({ status: 'rejected' });
-            if (payments[key].userId) await getRef(`users/${payments[key].userId}/activeDeposit`).remove();
-          }
+    // 1. HMAC-SHA256 Signature Verification (if secret configured)
+    const secret = process.env.PESAJET_WEBHOOK_SECRET;
+    if (secret) {
+      const signature = req.headers["x-webhook-signature"] || payload.signature;
+      if (signature) {
+        const { signature: _sig, ...cleanPayload } = payload;
+        const expectedSig = crypto
+          .createHmac("sha256", secret)
+          .update(JSON.stringify(cleanPayload))
+          .digest("hex");
+        const expectedBuf = Buffer.from(expectedSig);
+        const receivedBuf = Buffer.from(signature);
+        if (
+          expectedBuf.length !== receivedBuf.length ||
+          !crypto.timingSafeEqual(expectedBuf, receivedBuf)
+        ) {
+          logger.warn(`[PesaJet Webhook] Invalid signature rejected.`);
+          return res.status(401).send("Invalid webhook signature");
         }
       }
     }
-    return res.status(200).send('Webhook received');
-  } catch (error) { next(error); }
+
+    const searchId = transactionId || reference;
+    if (!searchId)
+      return res.status(400).send("Transaction ID or reference required");
+
+    // 2. Multi-Key Lookup: check gatewayReference, merchantReference, and paymentId
+    let targetPaymentId = null;
+    let paymentData = null;
+
+    if (transactionId) {
+      const snap = await getRef("payments")
+        .orderByChild("gatewayReference")
+        .equalTo(transactionId)
+        .get();
+      if (snap.exists()) {
+        const val = snap.val();
+        const firstKey = Object.keys(val)[0];
+        paymentData = val[firstKey];
+        targetPaymentId =
+          paymentData?.id || firstKey.replace(/^payments\//, "");
+      }
+    }
+
+    if (!targetPaymentId && reference) {
+      const snap = await getRef("payments")
+        .orderByChild("gatewayReference")
+        .equalTo(reference)
+        .get();
+      if (snap.exists()) {
+        const val = snap.val();
+        const firstKey = Object.keys(val)[0];
+        paymentData = val[firstKey];
+        targetPaymentId =
+          paymentData?.id || firstKey.replace(/^payments\//, "");
+      }
+    }
+
+    if (!targetPaymentId && reference) {
+      const snap = await getRef("payments")
+        .orderByChild("merchantReference")
+        .equalTo(reference)
+        .get();
+      if (snap.exists()) {
+        const val = snap.val();
+        const firstKey = Object.keys(val)[0];
+        paymentData = val[firstKey];
+        targetPaymentId =
+          paymentData?.id || firstKey.replace(/^payments\//, "");
+      }
+    }
+
+    if (!targetPaymentId && searchId) {
+      const cleanSearchId = String(searchId).replace(/^payments\//, "");
+      const directSnap = await getRef(`payments/${cleanSearchId}`).get();
+      if (directSnap.exists()) {
+        targetPaymentId = cleanSearchId;
+        paymentData = directSnap.val();
+      }
+    }
+
+    if (!targetPaymentId) {
+      logger.warn(
+        `[PesaJet Webhook] No matching payment found for transactionId=${transactionId}, reference=${reference}`,
+      );
+      return res.status(200).send("Payment not found, ignored");
+    }
+
+    // Ensure gatewayReference is populated with PesaJet transactionId
+    if (transactionId && paymentData.gatewayReference !== transactionId) {
+      await getRef(`payments/${targetPaymentId}`).update({
+        gatewayReference: transactionId,
+      });
+    }
+
+    // 3. Case-Insensitive Status Handling
+    if (isPaymentSuccessful(status, event)) {
+      logger.info(
+        `[PesaJet Webhook] Settling confirmed payment ${targetPaymentId}.`,
+      );
+      await settlePayment(targetPaymentId, "pesajet_webhook");
+      if (paymentData.userId) {
+        await getRef(`users/${paymentData.userId}/activeDeposit`)
+          .remove()
+          .catch(() => {});
+      }
+    } else if (isPaymentFailed(status, event)) {
+      logger.warn(
+        `[PesaJet Webhook] Rejecting payment ${targetPaymentId} (${status || event}).`,
+      );
+      const txResult = await getRef(`payments/${targetPaymentId}`).transaction(
+        (p) => {
+          if (p && (p.status === "pending" || p.status === "processing")) {
+            p.status = "rejected";
+            p.failureReason = payload.failureReason || status || event;
+            return p;
+          }
+          return;
+        },
+      );
+
+      if (txResult.committed) {
+        await getRef(`transactions/${targetPaymentId}`).update({
+          status: "rejected",
+        });
+        if (paymentData.userId) {
+          await getRef(`users/${paymentData.userId}/activeDeposit`)
+            .remove()
+            .catch(() => {});
+        }
+      }
+    }
+
+    return res.status(200).send("Webhook received");
+  } catch (error) {
+    next(error);
+  }
 };
 
 // ==========================================
-// MARZPAY WEBHOOK 
+// MARZPAY WEBHOOK
 // ==========================================
 export const marzPayWebhook = async (req, res, next) => {
   try {
     const { event_type, collection } = req.body;
-    if (!collection || !collection.reference) return res.status(400).send('Invalid MarzPay payload');
+    if (!collection || !collection.reference)
+      return res.status(400).send("Invalid MarzPay payload");
 
-    const snapshot = await getRef('payments').orderByChild('gatewayReference').equalTo(collection.reference).get();
-    if (!snapshot.exists()) return res.status(200).send('Payment not found');
+    const snapshot = await getRef("payments")
+      .orderByChild("gatewayReference")
+      .equalTo(collection.reference)
+      .get();
+    if (!snapshot.exists()) return res.status(200).send("Payment not found");
 
     const payments = snapshot.val();
     const paymentKeys = Object.keys(payments);
 
-    if (event_type === "collection.completed" || collection.status === "completed") {
-      await settlePayment(paymentKeys[0], 'marzpay_webhook');
-      
+    if (
+      event_type === "collection.completed" ||
+      collection.status === "completed"
+    ) {
+      await settlePayment(paymentKeys[0], "marzpay_webhook");
+      if (payments[paymentKeys[0]]?.userId) {
+        await getRef(`users/${payments[paymentKeys[0]].userId}/activeDeposit`)
+          .remove()
+          .catch(() => {});
+      }
+
       for (let i = 1; i < paymentKeys.length; i++) {
         await getRef(`payments/${paymentKeys[i]}`).transaction((p) => {
-          if (p && (p.status === 'pending' || p.status === 'processing')) { 
-            p.status = 'rejected'; 
-            p.failureReason = 'Duplicate gateway transaction'; 
-            return p; 
+          if (p && (p.status === "pending" || p.status === "processing")) {
+            p.status = "rejected";
+            p.failureReason = "Duplicate gateway transaction";
+            return p;
           }
           return;
         });
       }
-    } else if (event_type === "collection.failed" || collection.status === "failed") {
+    } else if (
+      event_type === "collection.failed" ||
+      collection.status === "failed"
+    ) {
       for (const key of paymentKeys) {
         const txResult = await getRef(`payments/${key}`).transaction((p) => {
-          if (p && (p.status === 'pending' || p.status === 'processing')) { 
-            p.status = 'rejected'; 
-            p.failureReason = collection.status; 
-            return p; 
+          if (p && (p.status === "pending" || p.status === "processing")) {
+            p.status = "rejected";
+            p.failureReason = collection.status;
+            return p;
           }
           return;
         });
-        
+
         if (txResult.committed) {
-          await getRef(`transactions/${key}`).update({ status: 'rejected' });
-          if (payments[key].userId) await getRef(`users/${payments[key].userId}/activeDeposit`).remove();
+          await getRef(`transactions/${key}`).update({ status: "rejected" });
+          if (payments[key].userId)
+            await getRef(`users/${payments[key].userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
         }
       }
     }
-    return res.status(200).send('Webhook received');
-  } catch (error) { next(error); }
+    return res.status(200).send("Webhook received");
+  } catch (error) {
+    next(error);
+  }
 };
 
 // ==========================================
 // CRON JOB FUNCTION (Reconciliation & Recovery)
 // ==========================================
 export const checkPendingPayments = async () => {
-  const cronLockRef = getRef('cronLocks/checkPendingPayments');
-  
+  const cronLockRef = getRef("cronLocks/checkPendingPayments");
+
   const lockResult = await cronLockRef.transaction((current) => {
     if (!current) return { lockedAt: Date.now() };
-    if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() }; 
-    return; 
+    if (Date.now() - current.lockedAt > 120000) return { lockedAt: Date.now() };
+    return;
   });
 
   if (!lockResult.committed) {
-    logger.info('[Cron] Skipped execution: another instance is running.');
+    logger.info("[Cron] Skipped execution: another instance is running.");
     return;
   }
 
-  logger.info('[Cron] Distributed lock acquired. Running pending payments check...');
+  logger.info(
+    "[Cron] Distributed lock acquired. Running pending payments check...",
+  );
 
   try {
     // 1. PROTECT THE STALE `processing` RECOVERY PATH
-    const processingSnap = await getRef('payments').orderByChild('status').equalTo('processing').get();
+    const processingSnap = await getRef("payments")
+      .orderByChild("status")
+      .equalTo("processing")
+      .get();
     if (processingSnap.exists()) {
       const processingPayments = Object.values(processingSnap.val());
       for (const payment of processingPayments) {
         const age = Date.now() - (payment.processingStartedAt || 0);
         // Only recover if processing for > 5 minutes (safety buffer)
-        if (age > 300000) { 
+        if (age > 300000) {
           const recoveryClaimRef = getRef(`settlementClaims/${payment.id}`);
           const claimResult = await recoveryClaimRef.transaction((c) => {
-            if (!c) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
-            if (Date.now() - c.claimedAt > 60000) return { source: 'cron_recovery', claimedAt: Date.now(), claimId: generateUUID() };
-            return; 
+            if (!c)
+              return {
+                source: "cron_recovery",
+                claimedAt: Date.now(),
+                claimId: generateUUID(),
+              };
+            if (Date.now() - c.claimedAt > 60000)
+              return {
+                source: "cron_recovery",
+                claimedAt: Date.now(),
+                claimId: generateUUID(),
+              };
+            return;
           });
-          
+
           if (!claimResult.committed) {
-            logger.info(`[Cron] Duplicate settlement prevented paymentId=${payment.id} source=cron_recovery`);
+            logger.info(
+              `[Cron] Duplicate settlement prevented paymentId=${payment.id} source=cron_recovery`,
+            );
             continue;
           }
 
           const claimData = claimResult.snapshot.val() || {};
-          logger.info(`[Cron Recovery] Settlement attempt: paymentId=${payment.id} userId=${payment.userId} gatewayReference=${payment.gatewayReference} previousStatus=processing cronSource=cron_recovery claimId=${claimData.claimId}`);
-          
-          await settlePayment(payment.id, 'cron_recovery');
+          logger.info(
+            `[Cron Recovery] Settlement attempt: paymentId=${payment.id} userId=${payment.userId} gatewayReference=${payment.gatewayReference} previousStatus=processing cronSource=cron_recovery claimId=${claimData.claimId}`,
+          );
+
+          await settlePayment(payment.id, "cron_recovery");
         }
       }
     }
-    
-    // 2. PROTECT THE PENDING PesaJet RECONCILIATION PATH
-    const pendingSnap = await getRef('payments').orderByChild('status').equalTo('pending').get();
+
+    // 2. PENDING PesaJet RECONCILIATION PATH
+    const pendingSnap = await getRef("payments")
+      .orderByChild("status")
+      .equalTo("pending")
+      .get();
     if (!pendingSnap.exists()) return;
 
     const pendingPayments = Object.values(pendingSnap.val());
     for (const payment of pendingPayments) {
+      // ONLY check PesaJet payments
+      if (
+        payment.gateway !== "pesajet" &&
+        payment.method !== "mtn" &&
+        payment.method !== "airtel"
+      ) {
+        continue;
+      }
+
       const currentPaymentSnap = await getRef(`payments/${payment.id}`).get();
       const currentPayment = currentPaymentSnap.val();
-      
-      if (!currentPayment || currentPayment.status !== 'pending' || !currentPayment.gatewayReference || currentPayment.gatewayReference.length <= 20) {
+
+      if (!currentPayment || currentPayment.status !== "pending") {
         continue;
       }
 
-      // Check for duplicate gateway references
-      const dupSnap = await getRef('payments').orderByChild('gatewayReference').equalTo(currentPayment.gatewayReference).get();
-      let isDuplicate = false;
-      if (dupSnap.exists()) {
-        const dups = dupSnap.val();
-        for (const key in dups) {
-          if (key !== currentPayment.id && (dups[key].status === 'completed' || dups[key].status === 'processing')) {
-            isDuplicate = true;
-            break;
-          }
-        }
-      }
-
-      if (isDuplicate) {
-        logger.info(`[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`);
-        const dupResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
-          if (p && p.status === 'pending') {
-            p.status = 'rejected';
-            p.failureReason = 'Duplicate gateway transaction';
-            return p;
-          }
-          return;
+      // Check age: auto-expire pending payments older than 24 hours
+      const createdAtMs = currentPayment.createdAt
+        ? new Date(currentPayment.createdAt).getTime()
+        : 0;
+      if (createdAtMs > 0 && Date.now() - createdAtMs > 86400000) {
+        logger.info(
+          `[Cron] Payment ${currentPayment.id} exceeded 24h expiration limit. Expiring.`,
+        );
+        await getRef(`payments/${currentPayment.id}`).update({
+          status: "expired",
+          failureReason: "Expired after 24 hours",
         });
-        
-        if (dupResult.committed) {
-          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
-        }
+        await getRef(`transactions/${currentPayment.id}`).update({
+          status: "expired",
+        });
+        if (currentPayment.userId)
+          await getRef(`users/${currentPayment.userId}/activeDeposit`)
+            .remove()
+            .catch(() => {});
         continue;
+      }
+
+      const queryRef =
+        currentPayment.gatewayReference ||
+        currentPayment.merchantReference ||
+        currentPayment.id;
+      if (!queryRef) continue;
+
+      // Duplicate gateway transaction check
+      if (currentPayment.gatewayReference) {
+        const dupSnap = await getRef("payments")
+          .orderByChild("gatewayReference")
+          .equalTo(currentPayment.gatewayReference)
+          .get();
+        let isDuplicate = false;
+        if (dupSnap.exists()) {
+          const dups = dupSnap.val();
+          for (const key in dups) {
+            if (
+              key !== currentPayment.id &&
+              (dups[key].status === "completed" ||
+                dups[key].status === "processing")
+            ) {
+              isDuplicate = true;
+              break;
+            }
+          }
+        }
+
+        if (isDuplicate) {
+          logger.info(
+            `[Cron] Duplicate gateway payment prevented paymentId=${currentPayment.id} gatewayReference=${currentPayment.gatewayReference}`,
+          );
+          await getRef(`payments/${currentPayment.id}`).update({
+            status: "rejected",
+            failureReason: "Duplicate gateway transaction",
+          });
+          await getRef(`transactions/${currentPayment.id}`).update({
+            status: "rejected",
+          });
+          if (currentPayment.userId)
+            await getRef(`users/${currentPayment.userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
+          continue;
+        }
       }
 
       // ATOMIC GATEWAY CLAIM FOR CRON WORKERS
-      const gwClaimRef = getRef(`gatewayClaims/${currentPayment.gatewayReference}`);
-      const gwClaimResult = await gwClaimRef.transaction((c) => {
-        if (!c) return { claimedAt: Date.now(), paymentId: currentPayment.id };
-        if (Date.now() - c.claimedAt > 60000) return { claimedAt: Date.now(), paymentId: currentPayment.id };
-        return; 
-      });
+      if (currentPayment.gatewayReference) {
+        const gwClaimRef = getRef(
+          `gatewayClaims/${currentPayment.gatewayReference}`,
+        );
+        const gwClaimResult = await gwClaimRef.transaction((c) => {
+          if (!c)
+            return { claimedAt: Date.now(), paymentId: currentPayment.id };
+          if (Date.now() - c.claimedAt > 60000)
+            return { claimedAt: Date.now(), paymentId: currentPayment.id };
+          return;
+        });
 
-      if (!gwClaimResult.committed) {
-        logger.info(`[Cron] Gateway reference ${currentPayment.gatewayReference} already claimed by another worker. Skipping.`);
-        continue;
+        if (!gwClaimResult.committed) {
+          logger.info(
+            `[Cron] Gateway reference ${currentPayment.gatewayReference} already claimed by another worker. Skipping.`,
+          );
+          continue;
+        }
       }
 
       // Claim for reconciliation
       const reconClaimRef = getRef(`settlementClaims/${currentPayment.id}`);
       const claimResult = await reconClaimRef.transaction((c) => {
-        if (!c) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
-        if (Date.now() - c.claimedAt > 60000) return { source: 'cron_reconciliation', claimedAt: Date.now(), claimId: generateUUID() };
-        return; 
+        if (!c)
+          return {
+            source: "cron_reconciliation",
+            claimedAt: Date.now(),
+            claimId: generateUUID(),
+          };
+        if (Date.now() - c.claimedAt > 60000)
+          return {
+            source: "cron_reconciliation",
+            claimedAt: Date.now(),
+            claimId: generateUUID(),
+          };
+        return;
       });
 
       if (!claimResult.committed) {
-        logger.info(`[Cron] Duplicate settlement prevented paymentId=${currentPayment.id} source=cron_reconciliation`);
+        logger.info(
+          `[Cron] Duplicate settlement prevented paymentId=${currentPayment.id} source=cron_reconciliation`,
+        );
         continue;
       }
 
       const claimData = claimResult.snapshot.val() || {};
-      
-      // FIX: Wrap PesaJet API call in try...catch so it doesn't crash the Cron job
-      let gatewayStatus = 'UNKNOWN';
+
+      // Query PesaJet status
+      let gatewayStatus = "UNKNOWN";
+      let failureReason = null;
       try {
-        const response = await fetch(`${process.env.PESAJET_API_URL}/${currentPayment.gatewayReference}`, { headers: { 'X-API-KEY': process.env.PESAJET_API_KEY } });
-        const result = await response.json();
-        gatewayStatus = result.status || 'UNKNOWN';
+        const result = await getPesajetPaymentStatus(queryRef);
+        gatewayStatus = result.status || result.event || "UNKNOWN";
+        failureReason = result.failureReason || null;
       } catch (apiError) {
-        logger.error(`[Cron] PesaJet API query failed for ${currentPayment.id}: ${apiError.message}`);
+        logger.error(
+          `[Cron] PesaJet API query failed for ${currentPayment.id}: ${apiError.message}`,
+        );
       }
 
-      if (gatewayStatus === 'SUCCESS' || gatewayStatus === 'COMPLETED') {
-        logger.info(`[Cron Reconciliation] Settlement attempt: paymentId=${currentPayment.id} userId=${currentPayment.userId} gatewayReference=${currentPayment.gatewayReference} previousStatus=pending cronSource=cron_reconciliation claimId=${claimData.claimId} gatewayStatus=${gatewayStatus}`);
-        
-        const settlementResult = await settlePayment(currentPayment.id, 'cron_reconciliation');
-        logger.info(`[Cron Reconciliation] Settlement result: paymentId=${currentPayment.id} result=${JSON.stringify(settlementResult)}`);
-        
+      if (isPaymentSuccessful(gatewayStatus)) {
+        logger.info(
+          `[Cron Reconciliation] Settlement attempt: paymentId=${currentPayment.id} userId=${currentPayment.userId} gatewayReference=${currentPayment.gatewayReference} cronSource=cron_reconciliation claimId=${claimData.claimId} gatewayStatus=${gatewayStatus}`,
+        );
+
+        const settlementResult = await settlePayment(
+          currentPayment.id,
+          "cron_reconciliation",
+        );
+        logger.info(
+          `[Cron Reconciliation] Settlement result: paymentId=${currentPayment.id} result=${JSON.stringify(settlementResult)}`,
+        );
+
         if (settlementResult.success || settlementResult.alreadySettled) {
-          await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+          if (currentPayment.userId)
+            await getRef(`users/${currentPayment.userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
         }
-      } else if (gatewayStatus === 'FAILED' || gatewayStatus === 'CANCELLED' || gatewayStatus === 'EXPIRED') {
-        const rejectResult = await getRef(`payments/${currentPayment.id}`).transaction((p) => {
-          if (p && p.status === 'pending') {
-            p.status = 'rejected';
-            p.failureReason = gatewayStatus;
+      } else if (isPaymentFailed(gatewayStatus)) {
+        const rejectResult = await getRef(
+          `payments/${currentPayment.id}`,
+        ).transaction((p) => {
+          if (p && p.status === "pending") {
+            p.status = "rejected";
+            p.failureReason = failureReason || gatewayStatus;
             return p;
           }
           return;
         });
-        
+
         if (rejectResult.committed) {
-          await getRef(`transactions/${currentPayment.id}`).update({ status: 'rejected' });
-          if (currentPayment.userId) await getRef(`users/${currentPayment.userId}/activeDeposit`).remove();
+          await getRef(`transactions/${currentPayment.id}`).update({
+            status: "rejected",
+          });
+          if (currentPayment.userId)
+            await getRef(`users/${currentPayment.userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
         }
       } else {
-        // FIX: If status is UNKNOWN or PENDING, do nothing. Let it wait for the next cron run or webhook.
-        logger.info(`[Cron Reconciliation] Payment ${currentPayment.id} still pending at gateway. Will retry later.`);
+        logger.info(
+          `[Cron Reconciliation] Payment ${currentPayment.id} still pending at gateway (${gatewayStatus}). Will retry later.`,
+        );
       }
     }
-  } catch (error) { 
-    console.error('Cron Error:', error.message); 
+  } catch (error) {
+    console.error("Cron Error:", error.message);
   } finally {
     await cronLockRef.remove();
-    logger.info('[Cron] Released distributed lock.');
+    logger.info("[Cron] Released distributed lock.");
   }
 };
 
 // ==========================================
-// ADMIN FUNCTIONS 
+// STATUS ENDPOINT (Real-time Status Polling)
+// ==========================================
+/**
+ * @desc    Get real-time payment status
+ * @route   GET /api/v1/payments/:id/status
+ * @access  Private
+ */
+export const getPaymentStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+
+    if (!id) {
+      return errorResponse(res, "Payment ID is required", 400);
+    }
+
+    const paymentRef = getRef(`payments/${id}`);
+    const paymentSnap = await paymentRef.get();
+
+    if (!paymentSnap.exists()) {
+      return errorResponse(res, "Payment not found", 404);
+    }
+
+    let payment = paymentSnap.val();
+
+    // Access control: normal user can only view their own payments
+    if (userRole === "user" && payment.userId !== userId) {
+      return errorResponse(res, "Unauthorized to view this payment", 403);
+    }
+
+    // If still pending or processing, poll PesaJet API in real-time
+    if (
+      (payment.status === "pending" || payment.status === "processing") &&
+      (payment.gateway === "pesajet" ||
+        payment.method === "mtn" ||
+        payment.method === "airtel")
+    ) {
+      const queryRef =
+        payment.gatewayReference || payment.merchantReference || payment.id;
+      if (queryRef) {
+        try {
+          const liveData = await getPesajetPaymentStatus(queryRef);
+          const liveStatus = liveData.status || liveData.event;
+
+          if (isPaymentSuccessful(liveStatus)) {
+            logger.info(
+              `[Status Poll] Payment ${id} confirmed successful via PesaJet live query. Settling now.`,
+            );
+            await settlePayment(id, "status_poll");
+            if (payment.userId) {
+              await getRef(`users/${payment.userId}/activeDeposit`)
+                .remove()
+                .catch(() => {});
+            }
+            const updatedSnap = await paymentRef.get();
+            if (updatedSnap.exists()) payment = updatedSnap.val();
+          } else if (isPaymentFailed(liveStatus)) {
+            logger.warn(
+              `[Status Poll] Payment ${id} reported failed/expired (${liveStatus}) on PesaJet.`,
+            );
+            await paymentRef.update({
+              status: "rejected",
+              failureReason: liveData.failureReason || liveStatus,
+              rejectedAt: new Date().toISOString(),
+            });
+            await getRef(`transactions/${id}`).update({ status: "rejected" });
+            if (payment.userId) {
+              await getRef(`users/${payment.userId}/activeDeposit`)
+                .remove()
+                .catch(() => {});
+            }
+            const updatedSnap = await paymentRef.get();
+            if (updatedSnap.exists()) payment = updatedSnap.val();
+          }
+        } catch (pollErr) {
+          logger.warn(
+            `[Status Poll] Live PesaJet check failed for ${id}: ${pollErr.message}`,
+          );
+        }
+      }
+    }
+
+    return successResponse(res, "Payment status fetched successfully", {
+      id: payment.id,
+      status: payment.status,
+      method: payment.method,
+      amount: payment.amount,
+      amountUGX: payment.amountUGX,
+      totalCredit: payment.totalCredit,
+      totalCreditUSD: payment.totalCreditUSD,
+      gateway: payment.gateway,
+      gatewayReference: payment.gatewayReference || null,
+      failureReason: payment.failureReason || null,
+      createdAt: payment.createdAt,
+      completedAt: payment.completedAt || null,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ==========================================
+// ADMIN FUNCTIONS
 // ==========================================
 export const approvePayment = async (req, res, next) => {
   try {
     const { id } = req.params;
     // Pass `true` for isAdminOverride so the Admin can bypass gateway locks
-    const result = await settlePayment(id, 'admin_manual', true);
-    if (result.alreadySettled) return errorResponse(res, 'Payment already approved', 400);
-    if (!result.success) return errorResponse(res, 'Payment could not be approved', 400);
-    return successResponse(res, 'Payment approved and wallet credited successfully');
-  } catch (error) { next(error); }
+    const result = await settlePayment(id, "admin_manual", true);
+    if (result.alreadySettled)
+      return errorResponse(res, "Payment already approved", 400);
+    if (!result.success)
+      return errorResponse(res, "Payment could not be approved", 400);
+
+    // Explicitly ensure activeDeposit lock is cleared for user
+    const paymentSnap = await getRef(`payments/${id}`).get();
+    if (paymentSnap.exists() && paymentSnap.val().userId) {
+      await getRef(`users/${paymentSnap.val().userId}/activeDeposit`)
+        .remove()
+        .catch(() => {});
+    }
+
+    return successResponse(
+      res,
+      "Payment approved and wallet credited successfully",
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 export const rejectPayment = async (req, res, next) => {
@@ -542,22 +1201,33 @@ export const rejectPayment = async (req, res, next) => {
     const { id } = req.params;
     const paymentRef = getRef(`payments/${id}`);
     const paymentSnapshot = await paymentRef.get();
-    if (!paymentSnapshot.exists()) return errorResponse(res, 'Payment not found', 404);
-    
+    if (!paymentSnapshot.exists())
+      return errorResponse(res, "Payment not found", 404);
+
     const result = await paymentRef.transaction((p) => {
-        if (p && (p.status === 'pending' || p.status === 'processing')) { 
-          p.status = 'rejected'; 
-          p.rejectedAt = new Date().toISOString(); 
-          return p; 
-        }
-        return;
+      if (p && (p.status === "pending" || p.status === "processing")) {
+        p.status = "rejected";
+        p.rejectedAt = new Date().toISOString();
+        return p;
+      }
+      return;
     });
-    
-    if (!result.committed) return errorResponse(res, 'Payment is already completed or rejected', 400);
-    await getRef(`transactions/${id}`).update({ status: 'rejected' });
-    if (result.snapshot.val().userId) await getRef(`users/${result.snapshot.val().userId}/activeDeposit`).remove();
-    return successResponse(res, 'Payment rejected successfully');
-  } catch (error) { next(error); }
+
+    if (!result.committed)
+      return errorResponse(
+        res,
+        "Payment is already completed or rejected",
+        400,
+      );
+    await getRef(`transactions/${id}`).update({ status: "rejected" });
+    if (result.snapshot.val().userId)
+      await getRef(`users/${result.snapshot.val().userId}/activeDeposit`)
+        .remove()
+        .catch(() => {});
+    return successResponse(res, "Payment rejected successfully");
+  } catch (error) {
+    next(error);
+  }
 };
 
 // ==========================================
@@ -566,8 +1236,12 @@ export const rejectPayment = async (req, res, next) => {
 export const cancelPendingDeposit = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const snapshot = await getRef('payments').orderByChild('userId').equalTo(userId).get();
-    if (!snapshot.exists()) return errorResponse(res, 'No pending deposits found.', 404);
+    const snapshot = await getRef("payments")
+      .orderByChild("userId")
+      .equalTo(userId)
+      .get();
+    if (!snapshot.exists())
+      return errorResponse(res, "No pending deposits found.", 404);
 
     let cancelledCount = 0;
     let alreadyProcessedCount = 0;
@@ -575,27 +1249,27 @@ export const cancelPendingDeposit = async (req, res, next) => {
 
     for (const key in snapshot.val()) {
       const payment = snapshot.val()[key];
-      if (payment.method === 'mtn' || payment.method === 'airtel') {
+      if (payment.method === "mtn" || payment.method === "airtel") {
         const paymentRef = getRef(`payments/${key}`);
         const cancelRes = await paymentRef.transaction((p) => {
           if (!p) return;
-          if (p.status === 'pending') {
-            p.status = 'cancelled';
-            p.failureReason = 'Cancelled by user';
+          if (p.status === "pending") {
+            p.status = "cancelled";
+            p.failureReason = "Cancelled by user";
             return p;
           }
-          return; 
+          return;
         });
-        
+
         if (cancelRes.committed) {
-          updates[`transactions/${key}/status`] = 'cancelled';
+          updates[`transactions/${key}/status`] = "cancelled";
           updates[`users/${userId}/activeDeposit`] = null; // Release lock only on successful cancel
           cancelledCount++;
         } else {
           const currentStatus = cancelRes.snapshot.val()?.status;
-          if (currentStatus === 'processing' || currentStatus === 'completed') {
+          if (currentStatus === "processing" || currentStatus === "completed") {
             alreadyProcessedCount++;
-          } else if (currentStatus === 'cancelled') {
+          } else if (currentStatus === "cancelled") {
             cancelledCount++;
           }
         }
@@ -604,13 +1278,22 @@ export const cancelPendingDeposit = async (req, res, next) => {
 
     if (cancelledCount > 0) {
       await getRef().update(updates);
-      return successResponse(res, 'Pending deposit cancelled successfully.');
+      return successResponse(res, "Pending deposit cancelled successfully.");
     } else if (alreadyProcessedCount > 0) {
-      return successResponse(res, 'Deposit is already being processed or completed.');
+      return successResponse(
+        res,
+        "Deposit is already being processed or completed.",
+      );
     } else {
-      return errorResponse(res, 'No pending MTN/Airtel deposits found to cancel.', 404);
+      return errorResponse(
+        res,
+        "No pending MTN/Airtel deposits found to cancel.",
+        404,
+      );
     }
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 };
 
 // ==========================================
@@ -618,27 +1301,32 @@ export const cancelPendingDeposit = async (req, res, next) => {
 // ==========================================
 export const getPayments = async (req, res, next) => {
   try {
-    const snapshot = await getRef('payments').get();
-    let payments = snapshot.exists() ? Object.values(snapshot.val()).reverse() : [];
-    const usersSnapshot = await getRef('users').get();
+    const snapshot = await getRef("payments").get();
+    let payments = snapshot.exists()
+      ? Object.values(snapshot.val()).reverse()
+      : [];
+    const usersSnapshot = await getRef("users").get();
     const usersMap = {};
     if (usersSnapshot.exists()) {
       const usersObj = usersSnapshot.val();
-      for (const key in usersObj) { 
+      for (const key in usersObj) {
         usersMap[key] = {
-          username: usersObj[key].username || usersObj[key].email || 'Unknown',
+          username: usersObj[key].username || usersObj[key].email || "Unknown",
           totalDeposited: usersObj[key].totalDeposited || 0,
-          balance: usersObj[key].balance || 0
-        }; 
+          balance: usersObj[key].balance || 0,
+        };
       }
     }
-    payments = payments.map(p => ({ 
-      ...p, 
-      username: usersMap[p.userId]?.username || 'Unknown',
+    payments = payments.map((p) => ({
+      ...p,
+      username: usersMap[p.userId]?.username || "Unknown",
       totalDeposited: usersMap[p.userId]?.totalDeposited || 0,
-      balance: usersMap[p.userId]?.balance || 0
+      balance: usersMap[p.userId]?.balance || 0,
     }));
-    if (req.user.role === 'user') payments = payments.filter(p => p.userId === req.user.id);
-    return successResponse(res, 'Payments fetched successfully', payments);
-  } catch (error) { next(error); }
+    if (req.user.role === "user")
+      payments = payments.filter((p) => p.userId === req.user.id);
+    return successResponse(res, "Payments fetched successfully", payments);
+  } catch (error) {
+    next(error);
+  }
 };
