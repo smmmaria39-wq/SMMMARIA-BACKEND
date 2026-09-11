@@ -543,13 +543,15 @@ export const pesajetWebhook = async (req, res, next) => {
     const secret = process.env.PESAJET_WEBHOOK_SECRET;
     if (secret) {
       const signature = req.headers["x-webhook-signature"] || payload.signature;
-      if (signature) {
-        const pesajet = getPesajetClient();
-        const isValid = pesajet.webhooks.verify(req.body, signature, secret);
-        if (!isValid) {
-          logger.warn(`[PesaJet Webhook] Invalid signature rejected.`);
-          return res.status(401).send("Invalid webhook signature");
-        }
+      if (!signature) {
+        logger.warn(`[PesaJet Webhook] Rejected webhook missing signature.`);
+        return res.status(401).send("Missing webhook signature");
+      }
+      const pesajet = getPesajetClient();
+      const isValid = pesajet.webhooks.verify(req.body, signature, secret);
+      if (!isValid) {
+        logger.warn(`[PesaJet Webhook] Invalid signature rejected.`);
+        return res.status(401).send("Invalid webhook signature");
       }
     }
 
