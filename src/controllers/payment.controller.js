@@ -1,39 +1,42 @@
 // ===============================================
 // Payment Controller
 // ===============================================
-import crypto from "node:crypto";
 import { getRef } from "../database/firebase.js";
 import { generateUUID } from "../utils/helpers.js";
 import { successResponse, errorResponse } from "../utils/response.js";
 import { logger } from "../utils/logger.js";
 import { settlePayment } from "../services/settlement.service.js";
+import { PesaJet, PesaJetError } from "@pesajet/sdk";
 
 // Exchange Rate: 1 USD = 3930 UGX
 const USD_TO_UGX_RATE = 3930;
 
 // ==========================================
-// TELECOM & CARRIER DETECTION (Uganda Guidelines)
+// TELECOM & CARRIER DETECTION (PesaJet SDK & Uganda Guidelines)
 // ==========================================
 /**
- * Detect carrier for a Ugandan phone number
+ * Detect carrier for a Ugandan phone number via @pesajet/sdk
  * MTN: 077, 078, 076, 079, 039
  * Airtel: 070, 075, 074
  * Cross-Network: 073 cuts across MTN & Airtel (returns null, caller must specify)
  */
+let cachedUtils = null;
+const getPesajetUtils = () => {
+  if (!cachedUtils) {
+    const apiKey = process.env.PESAJET_API_KEY || "pesajet_offline_utils";
+    cachedUtils = new PesaJet({ apiKey }).utils;
+  }
+  return cachedUtils;
+};
+
 export const detectProvider = (phoneNumber) => {
   if (!phoneNumber) return null;
-  const cleaned = phoneNumber.replace(/[\s\-\+]/g, "");
-  if (/^(256|0)?(77|78|76|79|39)\d{7}$/.test(cleaned)) return "mtn";
-  if (/^(256|0)?(70|75|74)\d{7}$/.test(cleaned)) return "airtel";
-  return null;
+  return getPesajetUtils().detectProvider(phoneNumber);
 };
 
 export const formatPhoneNumber = (phoneNumber) => {
   if (!phoneNumber) return "";
-  let cleaned = phoneNumber.replace(/[\s\-\(\)\+]/g, "");
-  if (cleaned.startsWith("0")) cleaned = "256" + cleaned.slice(1);
-  else if (!cleaned.startsWith("256")) cleaned = "256" + cleaned;
-  return "+" + cleaned;
+  return getPesajetUtils().formatPhoneNumber(phoneNumber);
 };
 
 // ==========================================
@@ -72,100 +75,54 @@ export const isPaymentFailed = (status, event) => {
 };
 
 // ==========================================
-// PESAJET CONFIG & CLIENT
+// PESAJET CLIENT (@pesajet/sdk)
 // ==========================================
-export const getPesajetConfig = () => {
+export const getPesajetClient = () => {
   const apiKey = process.env.PESAJET_API_KEY;
-  let rawUrl = (
-    process.env.PESAJET_API_BASE_URL ||
-    process.env.PESAJET_API_URL ||
-    "https://api.pesajet.com/api/v1"
-  ).trim();
-  // Strip trailing slashes, /payments, /transactions
-  const baseUrl = rawUrl
-    .replace(/\/+$/, "")
-    .replace(/\/(payments|transactions)$/, "");
-  return {
+  if (!apiKey) throw new Error("PesaJet API key is not configured.");
+
+  return new PesaJet({
     apiKey,
-    baseUrl,
-    paymentsUrl: `${baseUrl}/payments`,
-  };
+    webhookSecret: process.env.PESAJET_WEBHOOK_SECRET,
+  });
 };
 
+export const getPesajetConfig = () => ({
+  apiKey: process.env.PESAJET_API_KEY,
+});
+
 const processPesaJetPayment = async (payload) => {
-  const config = getPesajetConfig();
-  if (!config.apiKey) throw new Error("PesaJet API key is not configured.");
-
-  const response = await fetch(config.paymentsUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": config.apiKey,
-      "x-api-key": config.apiKey,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const responseText = await response.text();
-  let result;
+  const pesajet = getPesajetClient();
   try {
-    result = JSON.parse(responseText);
-  } catch (e) {
-    throw new Error(`PesaJet Error (HTTP ${response.status}): ${responseText}`);
+    return await pesajet.payments.create({
+      type: payload.type || "COLLECTION",
+      amount: payload.amount,
+      currency: payload.currency || "UGX",
+      phoneNumber: payload.phoneNumber,
+      provider: payload.provider,
+      reference: payload.reference,
+      description: payload.description,
+      idempotencyKey: payload.idempotencyKey,
+      metadata: payload.metadata,
+    });
+  } catch (error) {
+    if (error instanceof PesaJetError) {
+      error.status = error.statusCode || error.status;
+    }
+    throw error;
   }
-
-  if (!response.ok) {
-    const errorMsg =
-      result?.error?.message ||
-      result?.message ||
-      `PesaJet API declined (HTTP ${response.status})`;
-    const err = new Error(errorMsg);
-    err.status = response.status;
-    err.details = result;
-    throw err;
-  }
-
-  return result;
 };
 
 export const getPesajetPaymentStatus = async (transactionIdOrRef) => {
-  const config = getPesajetConfig();
-  if (!config.apiKey) throw new Error("PesaJet API key is not configured.");
-
-  const response = await fetch(
-    `${config.paymentsUrl}/${encodeURIComponent(transactionIdOrRef)}`,
-    {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": config.apiKey,
-        "x-api-key": config.apiKey,
-      },
-    },
-  );
-
-  const responseText = await response.text();
-  let result;
+  const pesajet = getPesajetClient();
   try {
-    result = JSON.parse(responseText);
-  } catch (e) {
-    throw new Error(
-      `PesaJet Query Error (HTTP ${response.status}): ${responseText}`,
-    );
+    return await pesajet.payments.get(transactionIdOrRef);
+  } catch (error) {
+    if (error instanceof PesaJetError) {
+      error.status = error.statusCode || error.status;
+    }
+    throw error;
   }
-
-  if (!response.ok) {
-    const errorMsg =
-      result?.error?.message ||
-      result?.message ||
-      `PesaJet Query Error (HTTP ${response.status})`;
-    const err = new Error(errorMsg);
-    err.status = response.status;
-    err.details = result;
-    throw err;
-  }
-
-  return result;
 };
 
 /**
@@ -524,11 +481,12 @@ export const createDeposit = async (req, res, next) => {
         );
 
         // Immediate Client / Validation / Auth errors (HTTP 4xx): Do NOT leave user trapped in zombie pending lock
+        const statusCode = apiError.statusCode || apiError.status;
         const isClientOrAuthError =
-          apiError.status &&
-          apiError.status >= 400 &&
-          apiError.status < 500 &&
-          apiError.status !== 408;
+          statusCode &&
+          statusCode >= 400 &&
+          statusCode < 500 &&
+          statusCode !== 408;
 
         if (isClientOrAuthError) {
           await getRef(`payments/${paymentId}`).update({
@@ -548,7 +506,7 @@ export const createDeposit = async (req, res, next) => {
             res,
             apiError.message ||
               "Payment request failed. Please check your details and try again.",
-            apiError.status || 400,
+            statusCode || 400,
           );
         }
 
@@ -581,22 +539,14 @@ export const pesajetWebhook = async (req, res, next) => {
     const payload = req.body || {};
     const { transactionId, status, event, reference } = payload;
 
-    // 1. HMAC-SHA256 Signature Verification (if secret configured)
+    // 1. HMAC-SHA256 Signature Verification via @pesajet/sdk (if secret configured)
     const secret = process.env.PESAJET_WEBHOOK_SECRET;
     if (secret) {
       const signature = req.headers["x-webhook-signature"] || payload.signature;
       if (signature) {
-        const { signature: _sig, ...cleanPayload } = payload;
-        const expectedSig = crypto
-          .createHmac("sha256", secret)
-          .update(JSON.stringify(cleanPayload))
-          .digest("hex");
-        const expectedBuf = Buffer.from(expectedSig);
-        const receivedBuf = Buffer.from(signature);
-        if (
-          expectedBuf.length !== receivedBuf.length ||
-          !crypto.timingSafeEqual(expectedBuf, receivedBuf)
-        ) {
+        const pesajet = getPesajetClient();
+        const isValid = pesajet.webhooks.verify(req.body, signature, secret);
+        if (!isValid) {
           logger.warn(`[PesaJet Webhook] Invalid signature rejected.`);
           return res.status(401).send("Invalid webhook signature");
         }

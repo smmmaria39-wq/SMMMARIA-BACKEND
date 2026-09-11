@@ -16,3 +16,5 @@ src/uploads/
 # OS Files
 .DS_Store
 Thumbs.db
+pnpm-lock.yaml
+pnpm-workspace.yaml
