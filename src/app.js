@@ -24,7 +24,7 @@ app.use(helmet());
 // 2. CORS Configuration
 const corsOptions = {
  origin: [
-  'https://mmaccounts.store', // Your main user frontend
+  'https://smmmaria39-wq.github.io/MARIA-ADMIN', // Your main admin frontend
   'https://smmaria.site',    // Your main user frontend 
   'https://adminmaria.gt.tc'
  ],
