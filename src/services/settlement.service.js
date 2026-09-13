@@ -80,7 +80,8 @@ export const settlePayment = async (
   // 2. Claim the payment (pending -> processing)
   if (paymentData.status === "pending") {
     const claimRes = await paymentRef.transaction((p) => {
-      if (p && p.status === "pending") {
+      if (!p) return p; // In Firebase RTDB, return p on initial null so server value is loaded for attempt 2
+      if (p.status === "pending") {
         p.status = "processing";
         p.processingSource = source;
         p.processingStartedAt = Date.now();
@@ -97,7 +98,12 @@ export const settlePayment = async (
     const age = Date.now() - (paymentData.processingStartedAt || 0);
 
     // FIX: Admin, cron_recovery, or verified status_poll can bypass the 2-minute wait
-    if (age < 120000 && !isAdminOverride && source !== "cron_recovery" && source !== "status_poll") {
+    if (
+      age < 120000 &&
+      !isAdminOverride &&
+      source !== "cron_recovery" &&
+      source !== "status_poll"
+    ) {
       return {
         success: false,
         message: "Payment is currently being processed",
@@ -106,7 +112,8 @@ export const settlePayment = async (
 
     // Atomically take over stale processing
     const takeoverRes = await paymentRef.transaction((p) => {
-      if (p && p.status === "processing") {
+      if (!p) return p; // In Firebase RTDB, return p on initial null so server value is loaded for attempt 2
+      if (p.status === "processing") {
         const currentAge = Date.now() - (p.processingStartedAt || 0);
         if (
           currentAge < 120000 &&
