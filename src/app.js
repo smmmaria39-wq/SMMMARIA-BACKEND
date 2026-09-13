@@ -23,6 +23,14 @@ app.use(helmet());
 
 // 2. CORS Configuration
 const corsOptions = {
+ origin: [
+  'https://megaboosterpanel.shop', // Your main admin frontend
+  'https://smmaria.site',    // Your main user frontend 
+  'https://adminmaria.gt.tc'
+ ],
+ methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+ allowedHeaders: ['Content-Type', 'Authorization', 'X-Panel-Domain'],
+ credentials: true
   origin: [
     "https://mmaccounts.store", // Your main user frontend
     "https://smmaria.site", // Your main user frontend
