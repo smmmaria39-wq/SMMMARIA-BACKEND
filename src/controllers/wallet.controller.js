@@ -4,6 +4,7 @@
 
 import { getRef } from '../database/firebase.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { reconcilePaymentLiveStatus } from './payment.controller.js';
 
 /**
  * @desc    Get user's wallet balance and transaction history
@@ -14,6 +15,22 @@ export const getWallet = async (req, res, next) => {
   try {
     const userId = req.user.id;
     
+    // Check if user has an active deposit that can be reconciled before reading balance
+    try {
+      const activeDepositSnap = await getRef(`users/${userId}/activeDeposit`).get();
+      if (activeDepositSnap.exists()) {
+        const active = activeDepositSnap.val();
+        if (active.paymentId) {
+          const paymentSnap = await getRef(`payments/${active.paymentId}`).get();
+          if (paymentSnap.exists()) {
+            await reconcilePaymentLiveStatus(paymentSnap.val());
+          }
+        }
+      }
+    } catch (reconcileErr) {
+      // Don't fail getWallet on reconciliation check
+    }
+
     // 1. Fetch user balance
     const userRef = await getRef(`users/${userId}`).get();
     const balance = userRef.exists() ? userRef.val().balance || 0 : 0;

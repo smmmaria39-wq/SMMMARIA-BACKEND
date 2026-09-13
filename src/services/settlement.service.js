@@ -96,8 +96,8 @@ export const settlePayment = async (
     // If processing, only take over if stale (> 2 minutes)
     const age = Date.now() - (paymentData.processingStartedAt || 0);
 
-    // FIX: Admin or cron_recovery can bypass the 2-minute wait
-    if (age < 120000 && !isAdminOverride && source !== "cron_recovery") {
+    // FIX: Admin, cron_recovery, or verified status_poll can bypass the 2-minute wait
+    if (age < 120000 && !isAdminOverride && source !== "cron_recovery" && source !== "status_poll") {
       return {
         success: false,
         message: "Payment is currently being processed",
@@ -111,7 +111,8 @@ export const settlePayment = async (
         if (
           currentAge < 120000 &&
           !isAdminOverride &&
-          source !== "cron_recovery"
+          source !== "cron_recovery" &&
+          source !== "status_poll"
         )
           return; // Abort if someone else just took over
         p.processingStartedAt = Date.now(); // Reset timer

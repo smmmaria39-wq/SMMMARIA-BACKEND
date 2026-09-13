@@ -1016,8 +1016,72 @@ export const checkPendingPayments = async () => {
 };
 
 // ==========================================
-// STATUS ENDPOINT (Real-time Status Polling)
+// STATUS ENDPOINT & LIVE RECONCILIATION
 // ==========================================
+
+/**
+ * Reconcile a pending payment with PesaJet status in real time
+ */
+export const reconcilePaymentLiveStatus = async (payment) => {
+  if (!payment) return null;
+  const paymentId = payment.id;
+  if (!paymentId) return null;
+
+  if (
+    (payment.status === "pending" || payment.status === "processing") &&
+    (payment.gateway === "pesajet" ||
+      payment.method === "mtn" ||
+      payment.method === "airtel")
+  ) {
+    const queryRef =
+      payment.gatewayReference || payment.merchantReference || paymentId;
+    if (queryRef) {
+      try {
+        const liveData = await getPesajetPaymentStatus(queryRef);
+        const liveStatus = liveData.status || liveData.event;
+
+        if (isPaymentSuccessful(liveStatus)) {
+          logger.info(
+            `[Status Poll] Payment ${paymentId} confirmed successful via PesaJet live query. Settling now.`,
+          );
+          await settlePayment(paymentId, "status_poll");
+          if (payment.userId) {
+            await getRef(`users/${payment.userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
+          }
+          const updatedSnap = await getRef(`payments/${paymentId}`).get();
+          return updatedSnap.exists() ? updatedSnap.val() : payment;
+        } else if (isPaymentFailed(liveStatus)) {
+          logger.warn(
+            `[Status Poll] Payment ${paymentId} reported failed/expired (${liveStatus}) on PesaJet.`,
+          );
+          await getRef(`payments/${paymentId}`).update({
+            status: "rejected",
+            failureReason: liveData.failureReason || liveStatus,
+            rejectedAt: new Date().toISOString(),
+          });
+          await getRef(`transactions/${paymentId}`).update({
+            status: "rejected",
+          });
+          if (payment.userId) {
+            await getRef(`users/${payment.userId}/activeDeposit`)
+              .remove()
+              .catch(() => {});
+          }
+          const updatedSnap = await getRef(`payments/${paymentId}`).get();
+          return updatedSnap.exists() ? updatedSnap.val() : payment;
+        }
+      } catch (pollErr) {
+        logger.warn(
+          `[Status Poll] Live PesaJet check failed for ${paymentId}: ${pollErr.message}`,
+        );
+      }
+    }
+  }
+  return payment;
+};
+
 /**
  * @desc    Get real-time payment status
  * @route   GET /api/v1/payments/:id/status
@@ -1033,8 +1097,29 @@ export const getPaymentStatus = async (req, res, next) => {
       return errorResponse(res, "Payment ID is required", 400);
     }
 
-    const paymentRef = getRef(`payments/${id}`);
-    const paymentSnap = await paymentRef.get();
+    let paymentRef = getRef(`payments/${id}`);
+    let paymentSnap = await paymentRef.get();
+
+    // If not found by exact ID, search by prefix, gatewayReference, or merchantReference
+    if (!paymentSnap.exists()) {
+      const allPaymentsSnap = await getRef("payments").get();
+      if (allPaymentsSnap.exists()) {
+        const all = allPaymentsSnap.val();
+        const foundKey = Object.keys(all).find(
+          (k) =>
+            k === id ||
+            k.toLowerCase().startsWith(id.toLowerCase()) ||
+            (all[k].id &&
+              all[k].id.toLowerCase().startsWith(id.toLowerCase())) ||
+            all[k].gatewayReference === id ||
+            all[k].merchantReference === id,
+        );
+        if (foundKey) {
+          paymentRef = getRef(`payments/${foundKey}`);
+          paymentSnap = await paymentRef.get();
+        }
+      }
+    }
 
     if (!paymentSnap.exists()) {
       return errorResponse(res, "Payment not found", 404);
@@ -1047,57 +1132,8 @@ export const getPaymentStatus = async (req, res, next) => {
       return errorResponse(res, "Unauthorized to view this payment", 403);
     }
 
-    // If still pending or processing, poll PesaJet API in real-time
-    if (
-      (payment.status === "pending" || payment.status === "processing") &&
-      (payment.gateway === "pesajet" ||
-        payment.method === "mtn" ||
-        payment.method === "airtel")
-    ) {
-      const queryRef =
-        payment.gatewayReference || payment.merchantReference || payment.id;
-      if (queryRef) {
-        try {
-          const liveData = await getPesajetPaymentStatus(queryRef);
-          const liveStatus = liveData.status || liveData.event;
-
-          if (isPaymentSuccessful(liveStatus)) {
-            logger.info(
-              `[Status Poll] Payment ${id} confirmed successful via PesaJet live query. Settling now.`,
-            );
-            await settlePayment(id, "status_poll");
-            if (payment.userId) {
-              await getRef(`users/${payment.userId}/activeDeposit`)
-                .remove()
-                .catch(() => {});
-            }
-            const updatedSnap = await paymentRef.get();
-            if (updatedSnap.exists()) payment = updatedSnap.val();
-          } else if (isPaymentFailed(liveStatus)) {
-            logger.warn(
-              `[Status Poll] Payment ${id} reported failed/expired (${liveStatus}) on PesaJet.`,
-            );
-            await paymentRef.update({
-              status: "rejected",
-              failureReason: liveData.failureReason || liveStatus,
-              rejectedAt: new Date().toISOString(),
-            });
-            await getRef(`transactions/${id}`).update({ status: "rejected" });
-            if (payment.userId) {
-              await getRef(`users/${payment.userId}/activeDeposit`)
-                .remove()
-                .catch(() => {});
-            }
-            const updatedSnap = await paymentRef.get();
-            if (updatedSnap.exists()) payment = updatedSnap.val();
-          }
-        } catch (pollErr) {
-          logger.warn(
-            `[Status Poll] Live PesaJet check failed for ${id}: ${pollErr.message}`,
-          );
-        }
-      }
-    }
+    // Live query PesaJet and auto-settle if successful
+    payment = (await reconcilePaymentLiveStatus(payment)) || payment;
 
     return successResponse(res, "Payment status fetched successfully", {
       id: payment.id,
@@ -1275,8 +1311,29 @@ export const getPayments = async (req, res, next) => {
       totalDeposited: usersMap[p.userId]?.totalDeposited || 0,
       balance: usersMap[p.userId]?.balance || 0,
     }));
-    if (req.user.role === "user")
+    if (req.user.role === "user") {
       payments = payments.filter((p) => p.userId === req.user.id);
+      // Auto-reconcile user's pending deposits via PesaJet status check
+      const pendingPesaJetPayments = payments.filter(
+        (p) =>
+          (p.status === "pending" || p.status === "processing") &&
+          (p.gateway === "pesajet" ||
+            p.method === "mtn" ||
+            p.method === "airtel"),
+      );
+
+      if (pendingPesaJetPayments.length > 0) {
+        await Promise.allSettled(
+          pendingPesaJetPayments.map(async (p) => {
+            const updated = await reconcilePaymentLiveStatus(p);
+            if (updated) {
+              p.status = updated.status;
+              p.failureReason = updated.failureReason || p.failureReason;
+            }
+          }),
+        );
+      }
+    }
     return successResponse(res, "Payments fetched successfully", payments);
   } catch (error) {
     next(error);

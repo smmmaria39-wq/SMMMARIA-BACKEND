@@ -7,10 +7,20 @@ import rateLimit from "express-rate-limit";
 // General API rate limiter
 export const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per window
+  max: 1000, // Generous limit for normal API usage
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path.includes("/webhook"),
+  skip: (req) => {
+    const url = (req.originalUrl || req.url || req.path || "").toLowerCase();
+    // Remove rate limits on webhooks, status polling, payment queries, wallet balance, and chat polling
+    return (
+      url.includes("/webhook") ||
+      url.includes("/status") ||
+      url.includes("/payments") ||
+      url.includes("/wallet") ||
+      url.includes("/chat")
+    );
+  },
   message: {
     success: false,
     message:
