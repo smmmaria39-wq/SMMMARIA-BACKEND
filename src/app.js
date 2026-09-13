@@ -28,6 +28,7 @@ const corsOptions = {
     "https://smmaria.site", // Your main user frontend
     "https://adminmaria.gt.tc",
     "http://localhost:3000", // Local development frontend
+    "https://payments.pesajet.com", // Pesajet Payments
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Panel-Domain"],
