@@ -12,6 +12,9 @@ import { notFound, errorHandler } from "./middleware/errorHandler.js";
 import { identifyPanel } from "./middleware/panelContext.js";
 import router from "./routes/index.js";
 
+// FIX: Import the new External SMM API routes
+import apiRoutes from "./routes/api.routes.js";
+
 // Initialize Express App
 const app = express();
 
@@ -53,6 +56,9 @@ app.use(identifyPanel);
 
 // 7. Routes
 app.use("/api/v1", router);
+
+// FIX: Mount External SMM API Routes (uses API Key Auth, not JWT)
+app.use("/api/v1/api", apiRoutes);
 
 // 8. Error Handling Middleware (Must be last)
 app.use(notFound);
