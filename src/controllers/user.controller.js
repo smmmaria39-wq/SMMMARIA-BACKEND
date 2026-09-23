@@ -98,17 +98,28 @@ export const generateApiKey = async (req, res, next) => {
  try {
   const userId = req.user.id;
   
-  // Generate a secure random 32-character API key
-  const newApiKey = crypto.randomBytes(16).toString('hex');
+  // FIX: Generate a secure API key with 'sk_' prefix
+  const newApiKey = `sk_${crypto.randomBytes(16).toString('hex')}`;
   
-  // Save it to the user's profile in Firebase
-  await getRef(`users/${userId}/apiKey`).set(newApiKey);
+  // FIX: Fetch old key to invalidate it in the index
+  const userSnap = await getRef(`users/${userId}`).get();
+  const oldKey = userSnap.exists() ? userSnap.val().apiKey : null;
+
+  const updates = {};
+  updates[`users/${userId}/apiKey`] = newApiKey;
+  
+  // FIX: Update apiKeys index for O(1) lookup and invalidate old key
+  if (oldKey) updates[`apiKeys/${oldKey}`] = null;
+  updates[`apiKeys/${newApiKey}`] = userId;
+
+  await getRef().update(updates);
   
   return successResponse(res, 'API Key generated successfully', { apiKey: newApiKey });
  } catch (error) {
   next(error);
  }
 };
+
 /**
  * @desc    Delete user account and move data to deletedAccounts for security
  * @route   DELETE /api/v1/users/me
