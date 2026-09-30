@@ -32,7 +32,7 @@ const corsOptions = {
     "https://megaboosterpanel.shop", // Your main admin frontend
     "https://smmaria.site", // Your main user frontend
     "https://adminmaria.gt.tc",
-    "https://cheapsmmug-cloud.github.io/Cheapsmmug", // Local development frontend
+    "https://mmaccounts.store", // Local development frontend
     "https://payments.pesajet.com", // Pesajet Payments
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
